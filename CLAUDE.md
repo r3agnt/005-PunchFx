@@ -28,7 +28,7 @@ Also: once a feature is tested on hardware, fold its checklist into "Passed" in 
 | `docs/DESIGN_LOOPER.md` | changing looper / beat repeat / pitch fx behaviour (agreed rules, memory table) |
 | `docs/CHANGELOG.md` | adding a version line (one line per version only) |
 | `docs/HARDWARE_TEST.md` | recording hardware test results |
-| `docs/DESIGN_FX.md` | working on layer 2 fx (rules, reverb/bit crusher as built, delay plan, later fx) |
+| `docs/DESIGN_FX.md` | working on layer 2 fx (rules, reverb/delay/bit crusher as built, later fx) |
 | `docs/WORKFLOW.md` | planning how to split up work / where each doc update goes |
 | `docs/archive/` | almost never: old full changelog, test checklists, old design text |
 
@@ -40,14 +40,14 @@ Also: once a feature is tested on hardware, fold its checklist into "Passed" in 
 - You cannot flash or hear the hardware: say clearly what is built-but-untested and tell me what to check.
 - Keep sessions short: one task per session, commit when it works (see `docs/WORKFLOW.md`).
 
-## Current state (v0.12.8, flashed and tested: layers, bit crusher, flash save, reverb)
-Layers (3-way toggle up/middle/down = 1/2/3; 2-way toggle = edit/perf). **Layer 1** = MIDI clock follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars; Shift+K1 input gain, Shift+K2 output level, Shift+K3 input offset); beat repeat B9-B16 (1/16 quantised, latch Shift+B9-B16); B6 pitch-down on the beat repeat. **Layer 2** = punch-in fx (`src/engine/fx/`): B1 reverb bus and B7 bit crusher built, the other 13 slots log "not built yet". **Layer 3** = tbd. Settings saved to flash. Slice mode was removed (idea in `docs/IDEAS.md`).
+## Current state (v0.13.0 built, NOT yet flashed/tested: delay. v0.12.8 tested: layers, bit crusher, flash save, reverb)
+Layers (3-way toggle up/middle/down = 1/2/3; 2-way toggle = edit/perf). **Layer 1** = MIDI clock follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars; Shift+K1 input gain, Shift+K2 output level, Shift+K3 input offset); beat repeat B9-B16 (1/16 quantised, latch Shift+B9-B16); B6 pitch-down on the beat repeat. **Layer 2** = punch-in fx (`src/engine/fx/`): B1 reverb bus, B2 delay bus and B7 bit crusher built, the other 13 slots log "not built yet". **Layer 3** = tbd. Settings saved to flash. Slice mode was removed (idea in `docs/IDEAS.md`).
 Signal chain: input gain -> beat repeat -> pitch fx -> looper -> layer 2 fx -> SoftClip -> output level, ceiling 0.9 (`docs/ARCHITECTURE.md`).
 Controls: layer 1 tables in `src/params.h` (`kPotMap`, `kCcMap`); layer 2 knobs in `MainPage::HandleFxKnob`; B8 = SHIFT; soft takeover everywhere, reset on every layer / mode / edit-slot / Shift change. Full list: `docs/HARDWARE_MAP.md`. Firmware version prints at boot and on Shift + B16 long press. **USB MIDI is disabled** (USB carries serial logging); DIN MIDI works.
 
 ## The plan: punch-in fx on layer 2 (design details: `docs/DESIGN_FX.md`, read it before touching `src/engine/fx/`)
-- **Layer 2 button map (agreed):** B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion+prefilter, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop (tight gate). Hold = on, Shift + button = latch, quantised to 1/16. Per slot: K1-K4 own params, K5 gain +-12 dB, K6 wet/dry (return level on bus fx), K7 hipass, K8 lopass; Shift+K1 / Shift+K2 = reverb / delay send.
-- **Build order:** 0.9 fork+strip, 0.10 fx framework + bit crusher, 0.11 flash save, 0.12 reverb bus (all done) -> **NEXT: delay bus (B2)** (proposal in DESIGN_FX.md, agree the questions first) -> simple inserts (res lowpass, distortion, tremolo chop) -> modulation fx (flanger, jet, phaser, comb) -> pitch / freq shifter / reverse (shimmer = reverb K4) -> stacking + snapshots.
+- **Layer 2 button map (agreed):** B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion+prefilter, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop (tight gate). Hold = on, Shift + button = latch, quantised to 1/16. Per slot: K1-K4 own params, K5 gain +-12 dB, K6 wet/dry (return level on bus fx), K7 hipass, K8 lopass; Shift+K1 / Shift+K2 = reverb / delay send (B2: Shift+K4 = reverb<>delay routing).
+- **Build order:** 0.9 fork+strip, 0.10 fx framework + bit crusher, 0.11 flash save, 0.12 reverb bus, 0.13 delay bus (all built; delay awaits hardware test) -> **NEXT: simple inserts** (res lowpass, distortion, tremolo chop) -> modulation fx (flanger, jet, phaser, comb) -> pitch / freq shifter / reverse (shimmer = reverb K4) -> stacking + snapshots.
 - **SDRAM objects** (`DSY_SDRAM_BSS`) must have NO constructor and no `= value` member defaults: it runs at power-up before SDRAM is on and FREEZES the Seed (0.12.0 bug). Set every member in `Init()`; guard with `static_assert(std::is_trivially_default_constructible<...>)`.
 - Layer = one header with `Init`, `Process(block)`, `GetStatus`; `main.cpp` only chains them. Fx engines: plain C++ in `src/engine/fx/` with Mac tests.
 
@@ -68,7 +68,7 @@ If something is not found there, say so instead of inventing it.
 | `src/engine/beat_repeat.h` | Beat repeat: history ring, stored slices, 1/16 quantising, crossfades |
 | `src/engine/quantized_loop_buffer.h` | The B1/B2 looper state machine, loop reader, crossfades |
 | `src/engine/pitch_fx.h` | `PitchFx`: exact pitch-down by whole semitones, keeps length |
-| `src/engine/fx/` | Layer 2: `fx_layer.h`, `fx_common.h` (HP/LP/gain/wet), `fx_engine.h`, `fx_bitcrush.h`, `fx_reverb_bus.h`, `fx_flanger_core.h` |
+| `src/engine/fx/` | Layer 2: `fx_layer.h`, `fx_common.h` (HP/LP/gain/wet), `fx_engine.h`, `fx_bitcrush.h`, `fx_reverb_bus.h`, `fx_delay_bus.h`, `fx_flanger_core.h` |
 | `src/engine/spsc_queue.h`, `looper_config.h` | Lock-free queue; fixed numbers (4/4, bars, min BPM, buffer sizes, pitch limits) |
 | `src/modules/gain_stage.h` | Input gain, soft clip, output level, ceiling |
 | `src/userinterface.h`, `src/ui_glue.h` | Template UI event/LED code (rarely edit) |

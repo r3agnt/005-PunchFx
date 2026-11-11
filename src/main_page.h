@@ -208,6 +208,8 @@ class MainPage : public daisy::UiPage
     bool HandleFxKnob(uint16_t potID, float pos)
     {
         static const char *const kSharedNames[4] = {"Out gain", "Wet/dry", "Hipass", "Lopass"};
+        // Which slot's routing is active? (the delay slot's value: < 0.5 = reverb feeds delay, else delay feeds reverb)
+        const bool delay_to_reverb = fx_settings[fx::kDelaySlot].v[fx::kRouting] >= 0.5f;
         daisy::FixedCapStr<64>   line;
         if(shift_)
             line.Append("Shift + ");
@@ -224,13 +226,41 @@ class MainPage : public daisy::UiPage
             if(!shift_)
             {
                 name = potID < 4 ? eng->KnobName(potID) : kSharedNames[potID - 4];
+                if(potID >= 4 && eng->KnobNameOverride(potID))
+                    name = eng->KnobNameOverride(potID); // e.g. the delay: K7/K8 = band centre / width
                 if(potID == fx::kWet && eng->IsBus())
                     name = "Return level"; // a send fx: K6 is how much reverb comes back, the dry is untouched
             }
-            else if(potID == 0 && !eng->IsBus())
+            else if(slot == fx::kReverbSlot)
+            {
+                if(potID == 1) // Shift + K2 on the reverb: how much reverb goes into the delay (routing reverb > delay)
+                {
+                    name        = "Send delay";
+                    value_index = fx::kSendDelay;
+                }
+            }
+            else if(slot == fx::kDelaySlot)
+            {
+                if(potID == 0) // Shift + K1 on the delay: how much delay goes into the reverb (routing delay > reverb)
+                {
+                    name        = "Send reverb";
+                    value_index = fx::kSendReverb;
+                }
+                else if(potID == 3) // Shift + K4 on the delay: which one feeds the other
+                {
+                    name        = "Routing";
+                    value_index = fx::kRouting;
+                }
+            }
+            else if(potID == 0)
             {
                 name        = "Send reverb"; // Shift + K1: how much of this fx goes into the reverb
                 value_index = fx::kSendReverb;
+            }
+            else if(potID == 1)
+            {
+                name        = "Send delay"; // Shift + K2: how much of this fx goes into the delay
+                value_index = fx::kSendDelay;
             }
         }
         if(!eng || name == nullptr)
@@ -243,6 +273,10 @@ class MainPage : public daisy::UiPage
         line.Append(name);
         line.Append(" - ");
         AppendFxValue(line, value_index, eng, pos);
+        // The send between the reverb and the delay only works in one of the two routings.
+        if((slot == fx::kReverbSlot && value_index == fx::kSendDelay && delay_to_reverb)
+           || (slot == fx::kDelaySlot && value_index == fx::kSendReverb && !delay_to_reverb))
+            line.Append(" (not active in this routing)");
 
         if(!fx_edit_mode)
             line.Append(" (perf mode: locked)");
@@ -265,12 +299,17 @@ class MainPage : public daisy::UiPage
     /** Value of an fx knob in real units, for the log. */
     static void AppendFxValue(daisy::FixedCapStr<64> &line, int knob, const fx::Engine *eng, float v)
     {
-        if(knob < 4)
+        char label[24];
+        if(knob < fx::kNumKnobs && eng->KnobLabel(knob, v, label, sizeof(label)))
+            line.Append(label); // the fx writes its own text (e.g. the delay's note length)
+        else if(knob < 4)
         {
             line.AppendFloat(eng->KnobReal(knob, v), 1);
             line.Append(eng->KnobUnit(knob));
         }
-        else if(knob == fx::kSendReverb)
+        else if(knob == fx::kRouting)
+            line.Append(v >= 0.5f ? "delay > reverb" : "reverb > delay");
+        else if(knob == fx::kSendReverb || knob == fx::kSendDelay)
         {
             line.AppendInt(static_cast<int>(v * 100.0f + 0.5f));
             line.Append("%");
@@ -330,6 +369,8 @@ class MainPage : public daisy::UiPage
                 led[btn(fs.latch)] = kLedStutterLatched;
             if(fs.reverb_ringing && led[0] < kLedStutterLatched)
                 led[0] = kLedStutterLatched; // B1 LED glows while the reverb is on or its tail rings
+            if(fs.delay_ringing && led[1] < kLedStutterLatched)
+                led[1] = kLedStutterLatched; // B2 LED the same for the delay
             if(fs.active >= 0)
                 led[btn(fs.active)] = kLedFull;
             if(fs.pending >= 0)

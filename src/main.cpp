@@ -38,6 +38,7 @@
 #include "engine/fx/fx_bitcrush.h"
 #include "engine/saved_state.h"
 #include "engine/fx/fx_reverb_bus.h"
+#include "engine/fx/fx_delay_bus.h"
 #include "modules/reverb_core.h"
 #include "util/PersistentStorage.h"
 
@@ -107,6 +108,12 @@ DSY_SDRAM_BSS static fx::ReverbBus reverb_bus;
 static_assert(std::is_trivially_default_constructible<fx::ReverbBus>::value,
               "ReverbBus lives in SDRAM and must have no constructor");
 static fx::ReverbSlot fx_reverb_slot;
+/** The delay (slot 1 = button 2): a bus too. Its two memory buffers (2.7 s each side, 1 MB per side) live in
+ *  SDRAM; the DelayBus object itself is small and stays in normal RAM (it has a constructor, which is fine there). */
+DSY_SDRAM_BSS static float delay_buf_l[fx::DelayBus::kSize];
+DSY_SDRAM_BSS static float delay_buf_r[fx::DelayBus::kSize];
+static fx::DelayBus  delay_bus;
+static fx::DelaySlot fx_delay_slot;
 
 /** SAVING (0.11.0): the fx settings and the four layer 1 settings are kept in the Seed's flash
  *  memory (QSPI) with libDaisy's PersistentStorage. It is written when the 2-way switch goes
@@ -592,7 +599,10 @@ int main(void)
     reverb_core.Attach(&sc_reverb);
     reverb_bus.Init(hw.seed.AudioSampleRate(), &reverb_core);
     fx_layer.SetReverbBus(&reverb_bus, 0);
+    delay_bus.Init(hw.seed.AudioSampleRate(), delay_buf_l, delay_buf_r);
+    fx_layer.SetDelayBus(&delay_bus, fx::kDelaySlot);
     fx_layer.SetEngine(0, &fx_reverb_slot); // button 1
+    fx_layer.SetEngine(1, &fx_delay_slot);  // button 2
     fx_layer.SetEngine(6, &fx_bitcrush); // button 7; the other slots come in later versions
     beat_repeat.Init(hist_buf_l, hist_buf_r, looper::kHistoryCapacityFrames,
                      frz_buf_l, frz_buf_r, looper::kFreezeCapacityFrames,

@@ -3,6 +3,7 @@
 Newest first, ONE line per version. Details (why, how, test counts) go in the git commit message.
 Full history up to 004-Looper v0.8.1: `docs/archive/CHANGELOG_FULL.md` (not loaded each session).
 
+- **0.13.0** - Delay bus on B2 (`fx_delay_bus.h`): clock-synced time (1/4, dotted 1/8, 1/8, dotted 1/16, 1/16, 1/32), crossfaded time changes, feedback with a bandpass in the loop (K7 centre, K8 width), ping-pong, tail rings out + auto-off, delay send (Shift + K2) on every other fx, reverb<>delay routing (Shift + K4 on B2, one direction at a time); SavedState layout v3 (saved fx settings reset once).
 - **0.12.8** - Reverb slot: K8 lopass moved from the dry to the reverb input (before diffusion + reverb); diffusion kept.
 - **0.12.7** - Reverb: fixed input diffusion (4 allpass per side, ~19 ms) smooths the bright slapback-like first echoes.
 - **0.12.6** - Reverb: K1 Time scaled by tail length 0.4-12 s (even steps); tone default 4686 Hz; pre-delay 0-100 ms, default 0.

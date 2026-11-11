@@ -745,8 +745,369 @@ static void TestReverbLayer()
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// DELAY BUS (B2)
+// ---------------------------------------------------------------------------------------------
+/** Knob value that selects delay step `i` (0 = 1/4 ... 5 = 1/32). */
+static float StepKnob(int i) { return (static_cast<float>(i) + 0.5f) / static_cast<float>(fx::DelayBus::kNumSteps); }
+
+/** A DelayBus with its own memory, for the tests. */
+struct DelayRig
+{
+    std::vector<float> bl, br;
+    fx::DelayBus       bus;
+    fx::SlotSettings   s;
+    DelayRig() : bl(fx::DelayBus::kSize), br(fx::DelayBus::kSize)
+    {
+        bus.Init(kSr, bl.data(), br.data());
+        fx::DelaySlot slot;
+        s = fx::DefaultSettings();
+        slot.SetDefaults(s);
+    }
+    /** Run `total` samples: input `in` (zeros after its end), fed to the bus while t < feed_until. */
+    void Run(const std::vector<float>& in, size_t feed_until, size_t total, float spb, std::vector<float>& ol,
+             std::vector<float>& orr)
+    {
+        ol.clear();
+        orr.clear();
+        for(size_t t = 0; t + kBlock <= total; t += kBlock)
+        {
+            float il[kBlock], ir[kBlock], l[kBlock], r[kBlock];
+            for(size_t i = 0; i < kBlock; i++)
+                il[i] = ir[i] = (t + i < in.size() ? in[t + i] : 0.0f);
+            bus.Process(il, ir, l, r, kBlock, s, t < feed_until, spb);
+            for(size_t i = 0; i < kBlock; i++)
+            {
+                ol.push_back(l[i]);
+                orr.push_back(r[i]);
+            }
+        }
+    }
+};
+
+static size_t PeakAt(const std::vector<float>& v, size_t a, size_t b)
+{
+    size_t best = a;
+    for(size_t i = a; i < b && i < v.size(); i++)
+        if(std::fabs(v[i]) > std::fabs(v[best]))
+            best = i;
+    return best;
+}
+
+static void TestDelayBus()
+{
+    std::printf("delay bus\n");
+    std::vector<float> ol, orr;
+    std::vector<float> impulse(48, 0.0f);
+    impulse[0] = 1.0f;
+    {
+        // echo time = note length at the clock tempo: 1/8 at 120 BPM (a bar = 96000 samples) = 12000 samples
+        DelayRig d;
+        d.s.v[0] = StepKnob(2);
+        d.s.v[1] = 0.0f; // no feedback: one echo only
+        d.Run(impulse, 48, 30000, 96000.0f, ol, orr);
+        const size_t p = PeakAt(ol, 100, 30000);
+        CHECK(p == 12000, "1/8 at 120 BPM: echo at sample %zu (expected 12000)", p);
+        CHECK(std::fabs(ol[p] - 1.0f) < 1e-4f, "echo level is the input level (%.4f)", ol[p]);
+        CHECK(std::fabs(ol[p + 5000]) < 1e-6f, "no feedback: no second echo");
+    }
+    {
+        DelayRig d; // the same step at 60 BPM (a bar = 192000) = twice as long
+        d.s.v[0] = StepKnob(2);
+        d.s.v[1] = 0.0f;
+        d.Run(impulse, 48, 30000, 192000.0f, ol, orr);
+        CHECK(PeakAt(ol, 100, 30000) == 24000, "1/8 at 60 BPM: echo at 24000");
+    }
+    {
+        // all six steps (a beat = 24000 samples at 120 BPM)
+        const size_t expect[6] = {24000, 18000, 12000, 9000, 6000, 3000};
+        bool         ok        = true;
+        for(int i = 0; i < 6; i++)
+        {
+            DelayRig d;
+            d.s.v[0] = StepKnob(i);
+            d.s.v[1] = 0.0f;
+            d.Run(impulse, 48, 30000, 96000.0f, ol, orr);
+            if(PeakAt(ol, 100, 30000) != expect[i])
+                ok = false;
+        }
+        CHECK(ok, "all six note lengths (1/4, dotted 1/8, 1/8, dotted 1/16, 1/16, 1/32) land at the right sample");
+    }
+    {
+        DelayRig d; // no clock (spb 0): keeps the 120 BPM it starts with
+        d.s.v[0] = StepKnob(2);
+        d.s.v[1] = 0.0f;
+        d.Run(impulse, 48, 30000, 0.0f, ol, orr);
+        CHECK(PeakAt(ol, 100, 30000) == 12000, "no clock: 120 BPM");
+    }
+    {
+        // feedback: a second, quieter echo
+        DelayRig d;
+        d.s.v[0] = StepKnob(2);
+        d.s.v[1] = 0.5f / 0.95f; // feedback 0.5
+        d.Run(impulse, 48, 40000, 96000.0f, ol, orr);
+        const size_t p2 = PeakAt(ol, 24000 - 300, 24000 + 300);
+        const float  a2 = std::fabs(ol[p2]);
+        CHECK(a2 > 0.05f && a2 < 0.5f, "second echo is quieter than 0.5 x the first (%.3f)", a2);
+    }
+    {
+        // the bandpass in the loop: a 50 Hz burst fades faster than a 1.5 kHz burst
+        float        ratio[2];
+        const double freq[2] = {50.0, 1500.0};
+        for(int k = 0; k < 2; k++)
+        {
+            DelayRig d;
+            d.s.v[0]                 = StepKnob(2);
+            d.s.v[1]                 = 0.8f / 0.95f; // feedback 0.8
+            std::vector<float> burst = Sine(freq[k], 4800, 0.5);
+            d.Run(burst, 4800, 40000, 96000.0f, ol, orr);
+            ratio[k] = Rms(ol, 24000, 28800) / Rms(ol, 12000, 16800);
+        }
+        CHECK(ratio[0] < 0.4f * ratio[1], "bandpass in the loop: 50 Hz repeats fade faster (%.3f) than 1.5 kHz (%.3f)", ratio[0], ratio[1]);
+        CHECK(ratio[1] > 0.5f, "1.5 kHz (inside the band) repeats at about the feedback (%.3f)", ratio[1]);
+    }
+    {
+        // ping-pong 100%: first echo on the left only, second on the right only
+        DelayRig d;
+        d.s.v[0] = StepKnob(2);
+        d.s.v[1] = 0.5f / 0.95f;
+        d.s.v[3] = 1.0f;
+        d.Run(impulse, 48, 40000, 96000.0f, ol, orr);
+        CHECK(std::fabs(ol[12000]) > 0.9f && std::fabs(orr[12000]) < 1e-6f, "ping-pong: echo 1 is left only");
+        const size_t pr = PeakAt(orr, 24000 - 300, 24000 + 300);
+        CHECK(std::fabs(orr[pr]) > 0.05f && std::fabs(ol[pr]) < 1e-6f, "ping-pong: echo 2 is right only");
+    }
+    {
+        // rings out, then switches itself off
+        DelayRig d;
+        d.s.v[0] = StepKnob(2);
+        d.s.v[1] = 0.3f / 0.95f;
+        d.Run(impulse, 48, 4800, 96000.0f, ol, orr);
+        CHECK(d.bus.Running(), "running just after the input");
+        d.Run(impulse, 0, 48000 * 10, 96000.0f, ol, orr);
+        CHECK(!d.bus.Running(), "the delay switched itself off after the repeats died");
+        float m = 0;
+        for(float x : ol)
+            m = std::max(m, std::fabs(x));
+        d.Run(impulse, 0, 4800, 96000.0f, ol, orr);
+        m = 0;
+        for(float x : ol)
+            m = std::max(m, std::fabs(x));
+        CHECK(m == 0.0f, "silent while off");
+    }
+    {
+        // 1/4 at 60 BPM = echoes 1 s apart: the silence between two echoes must NOT switch it off
+        DelayRig d;
+        d.s.v[0] = StepKnob(0);
+        d.s.v[1] = 0.5f / 0.95f;
+        d.Run(impulse, 48, 48000 + 24000, 192000.0f, ol, orr); // 1.5 s: after echo 1, before echo 2
+        CHECK(d.bus.Running(), "still running in the quiet gap between two echoes");
+        d.Run(impulse, 0, 48000, 192000.0f, ol, orr); // 2.5 s: echo 2 has passed
+        float m = 0;
+        for(size_t i = 0; i < ol.size(); i++)
+            m = std::max(m, std::fabs(ol[i]));
+        CHECK(m > 0.05f, "echo 2 came (%.3f)", m);
+    }
+    {
+        // changing the time while it plays: crossfade, no clicks (the biggest step between samples stays small)
+        DelayRig d;
+        d.s.v[1] = 0.0f;
+        const std::vector<float> sine = Sine(440, 48000 * 3, 0.5);
+        std::vector<float>       all;
+        d.s.v[0] = StepKnob(2);
+        d.Run(sine, 48000 * 3, 48000, 96000.0f, ol, orr);
+        all = ol;
+        d.s.v[0] = StepKnob(4); // jump to 1/16 in the middle of the sound
+        for(size_t t = 48000; t + kBlock <= 96000; t += kBlock)
+        {
+            float l[kBlock], r[kBlock];
+            d.bus.Process(&sine[t], &sine[t], l, r, kBlock, d.s, true, 96000.0f);
+            for(size_t i = 0; i < kBlock; i++)
+                all.push_back(l[i]);
+        }
+        float maxstep = 0;
+        for(size_t i = 13000; i + 1 < all.size(); i++)
+            maxstep = std::max(maxstep, std::fabs(all[i + 1] - all[i]));
+        CHECK(maxstep < 0.06f, "no click when the time changes (largest step %.4f)", maxstep);
+    }
+    {
+        // the longest feedback stays bounded
+        DelayRig d;
+        d.s.v[0] = StepKnob(3);
+        d.s.v[1] = 1.0f;
+        const std::vector<float> sine = Sine(1500, 48000 * 20, 0.5);
+        d.Run(sine, sine.size(), sine.size(), 96000.0f, ol, orr);
+        float peak = 0;
+        bool  finite = true;
+        for(float x : ol)
+        {
+            peak = std::max(peak, std::fabs(x));
+            if(!std::isfinite(x))
+                finite = false;
+        }
+        CHECK(finite && peak < 12.0f, "full feedback with a steady tone stays bounded (peak %.2f)", peak);
+    }
+}
+
+/** The reverb (B1) and delay (B2) both in the layer, with a "half" fx on B3 (slot 2) to try the sends. */
+struct DelayLayerRig
+{
+    EchoCore           core;
+    fx::ReverbBus      rbus;
+    fx::ReverbSlot     rslot;
+    std::vector<float> bl, br;
+    fx::DelayBus       dbus;
+    fx::DelaySlot      dslot;
+    fx::Layer          layer;
+    fx::SlotSettings   settings[fx::kNumSlots];
+    Scale              half{0.5f};
+    fx::BlockInfo      info;
+    std::vector<float> in, out;
+    size_t             t = 0;
+    DelayLayerRig() : bl(fx::DelayBus::kSize), br(fx::DelayBus::kSize)
+    {
+        for(auto& s : settings)
+            s = fx::DefaultSettings();
+        layer.Init(kSr, settings);
+        rbus.Init(kSr, &core);
+        rbus.SetDiffusion(false);
+        dbus.Init(kSr, bl.data(), br.data());
+        layer.SetReverbBus(&rbus, fx::kReverbSlot);
+        layer.SetDelayBus(&dbus, fx::kDelaySlot);
+        layer.SetEngine(fx::kReverbSlot, &rslot);
+        layer.SetEngine(fx::kDelaySlot, &dslot);
+        layer.SetEngine(2, &half);
+        info.running        = false;
+        info.buttons_active = true;
+        in                  = Sine(440, 48000 * 40);
+        for(size_t i = 19200; i < in.size(); i++)
+            in[i] = 0.0f;
+        settings[0].v[0] = 0.0f; // fast reverb decay
+        settings[0].v[2] = 0.0f; // no pre-delay
+    }
+    void Blocks(size_t count)
+    {
+        for(size_t b = 0; b < count; b++)
+        {
+            float l[kBlock], r[kBlock];
+            layer.Process(info, &in[t], &in[t], l, r, kBlock);
+            for(size_t i = 0; i < kBlock; i++)
+                out.push_back(l[i]);
+            t += kBlock;
+        }
+    }
+};
+
+static void TestDelayLayer()
+{
+    std::printf("delay in the layer (slot B2, sends, routing)\n");
+    {
+        // hold B2: the dry is untouched, echoes come after the input stops, the bus rings out and switches off
+        DelayLayerRig r;
+        r.info.raw_mask = 1u << 1;
+        r.Blocks(250); // 0.25 s: the input is still playing
+        CHECK(r.layer.GetStatus().delay_ringing, "delay running while held");
+        r.info.raw_mask = 0;
+        r.Blocks(500); // to 0.75 s: the input ended at 0.4 s, the 1/8 echo (0.25 s) of its end plays until 0.65 s
+        CHECK(Rms(r.out, 21600, 30000) > 0.02f, "echoes keep playing after release and after the input stopped");
+        r.Blocks(20000);
+        CHECK(!r.layer.GetStatus().delay_ringing, "the delay switched itself off");
+        CHECK(!r.layer.GetStatus().reverb_ringing, "the reverb was never started (routing reverb > delay: the reverb is not fed by the delay)");
+    }
+    {
+        // the delay slot's K5 gain applies to the dry while it is on, like the reverb's
+        DelayLayerRig r;
+        r.settings[1].v[fx::kWet]  = 0.0f;
+        r.settings[1].v[fx::kGain] = 1.0f; // +12 dB
+        r.info.raw_mask = 1u << 1;
+        r.Blocks(150);
+        const float ratio = Rms(r.out, 2400, 6000) / Rms(r.in, 2400, 6000);
+        CHECK(std::fabs(20 * std::log10(ratio) - 12.0f) < 0.3f, "delay slot on: out gain +12 dB lifts the dry (%.1f dB)", 20 * std::log10(ratio));
+    }
+    {
+        // another fx with a delay send feeds the delay; send 0 does not
+        DelayLayerRig r;
+        r.info.raw_mask = 1u << 2;
+        r.Blocks(300);
+        CHECK(!r.layer.GetStatus().delay_ringing, "delay send 0: the delay stays off");
+        DelayLayerRig q;
+        q.settings[2].v[fx::kSendDelay] = 1.0f;
+        q.info.raw_mask = 1u << 2;
+        q.Blocks(300);
+        CHECK(q.layer.GetStatus().delay_ringing, "delay send 1: the delay runs");
+        CHECK(!q.layer.GetStatus().reverb_ringing, "... and the reverb stays off");
+        CHECK(Rms(q.out, 9600, 14400) > Rms(r.out, 9600, 14400) * 1.1f, "the send adds echoes on top of the fx output");
+    }
+    {
+        // routing reverb > delay (default): the reverb feeds the delay (reverb slot's delay send)
+        DelayLayerRig r;
+        r.settings[0].v[fx::kSendDelay] = 1.0f;
+        r.info.raw_mask = 1u << 0;
+        r.Blocks(300);
+        CHECK(r.layer.GetStatus().reverb_ringing && r.layer.GetStatus().delay_ringing, "reverb > delay: holding B1 runs both");
+        r.info.raw_mask = 0;
+        r.Blocks(50);
+        CHECK(r.layer.GetStatus().delay_ringing, "the delay keeps running while the reverb tail is still there");
+        DelayLayerRig z; // reverb's delay send 0: the delay stays off
+        z.settings[0].v[fx::kSendDelay] = 0.0f;
+        z.info.raw_mask = 1u << 0;
+        z.Blocks(300);
+        CHECK(z.layer.GetStatus().reverb_ringing && !z.layer.GetStatus().delay_ringing, "delay send 0 on the reverb: the delay stays off");
+        // the other direction does nothing in this routing: B2 with a reverb send of 1 never starts the reverb
+        DelayLayerRig y;
+        y.settings[1].v[fx::kSendReverb] = 1.0f;
+        y.info.raw_mask = 1u << 1;
+        y.Blocks(300);
+        CHECK(y.layer.GetStatus().delay_ringing && !y.layer.GetStatus().reverb_ringing, "reverb > delay: the delay does not feed the reverb");
+    }
+    {
+        // routing delay > reverb: the delay feeds the reverb, never the other way
+        DelayLayerRig r;
+        r.settings[1].v[fx::kRouting]    = 1.0f;
+        r.settings[1].v[fx::kSendReverb] = 1.0f;
+        r.info.raw_mask = 1u << 1;
+        r.Blocks(300);
+        CHECK(r.layer.GetStatus().delay_ringing && r.layer.GetStatus().reverb_ringing, "delay > reverb: holding B2 runs both");
+        DelayLayerRig q;
+        q.settings[1].v[fx::kRouting]   = 1.0f;
+        q.settings[0].v[fx::kSendDelay] = 1.0f;
+        q.info.raw_mask = 1u << 0;
+        q.Blocks(300);
+        CHECK(q.layer.GetStatus().reverb_ringing && !q.layer.GetStatus().delay_ringing, "delay > reverb: the reverb does not feed the delay");
+        DelayLayerRig z; // delay's reverb send 0
+        z.settings[1].v[fx::kRouting]    = 1.0f;
+        z.settings[1].v[fx::kSendReverb] = 0.0f;
+        z.info.raw_mask = 1u << 1;
+        z.Blocks(300);
+        CHECK(z.layer.GetStatus().delay_ringing && !z.layer.GetStatus().reverb_ringing, "reverb send 0 on the delay: the reverb stays off");
+    }
+    {
+        // everything sending everything, both routings: no runaway, and both ring out and switch off
+        for(int routing = 0; routing < 2; routing++)
+        {
+            DelayLayerRig r;
+            r.settings[1].v[fx::kRouting]    = static_cast<float>(routing);
+            r.settings[0].v[fx::kSendDelay]  = 1.0f;
+            r.settings[1].v[fx::kSendReverb] = 1.0f;
+            r.settings[2].v[fx::kSendDelay]  = 1.0f;
+            r.settings[2].v[fx::kSendReverb] = 1.0f;
+            r.info.raw_mask = 1u << 2;
+            r.Blocks(400);
+            r.info.raw_mask = 0;
+            r.Blocks(48000 * 30 / static_cast<int>(kBlock));
+            float peak = 0;
+            for(float x : r.out)
+                peak = std::max(peak, std::fabs(x));
+            CHECK(peak < 6.0f, "routing %d: all sends at 100%% stay bounded (peak %.2f)", routing, peak);
+            CHECK(!r.layer.GetStatus().reverb_ringing && !r.layer.GetStatus().delay_ringing, "routing %d: both switched themselves off", routing);
+        }
+    }
+}
+
 int main()
 {
+    TestDelayBus();
+    TestDelayLayer();
     TestStage();
     TestBitCrush();
     TestQuantisedStartStop();

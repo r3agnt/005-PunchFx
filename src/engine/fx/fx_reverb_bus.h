@@ -221,6 +221,7 @@ class ReverbSlot : public Engine
         s.v[1]     = 0.5678f; // tone: 4686 Hz
         s.v[2]     = 0.0f;    // pre-delay: 0 ms
         s.v[kWet]  = 0.4f; // 40% reverb
+        s.v[kSendDelay] = 0.5f; // reverb -> delay: 50% (only used when the routing is reverb > delay, the default)
     }
 };
 

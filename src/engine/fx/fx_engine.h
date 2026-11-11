@@ -6,6 +6,8 @@
 namespace fx {
 
 constexpr int kNumSlots = 15; // layer 2 buttons: B1-B7 = slots 0-6, B9-B16 = slots 7-14
+constexpr int kReverbSlot = 0; // B1: the reverb bus
+constexpr int kDelaySlot  = 1; // B2: the delay bus
 
 /** Every fx has 8 knob values (0.0 - 1.0), one per knob:
  *  knobs 1-4 (index 0-3) = the fx's own parameters (each fx decides what they mean),
@@ -13,9 +15,13 @@ constexpr int kNumSlots = 15; // layer 2 buttons: B1-B7 = slots 0-6, B9-B16 = sl
 constexpr int kNumKnobs = 8;
 constexpr int kGain = 4, kWet = 5, kHp = 6, kLp = 7;
 /** Plus two "send" amounts per slot (set with Shift + K1 / Shift + K2 in edit mode): how much of
- *  this fx's output goes into the reverb bus / the delay bus (0 = none). */
-constexpr int kNumValues = 10;
-constexpr int kSendReverb = 8, kSendDelay = 9;
+ *  this fx's output goes into the reverb bus / the delay bus (0 = none).
+ *  On the two bus slots the same values mean: reverb slot kSendDelay = how much reverb goes into the delay;
+ *  delay slot kSendReverb = how much delay goes into the reverb.
+ *  Value 10 (kRouting) is used by the DELAY slot only (Shift + K4): below 0.5 = reverb feeds the delay,
+ *  0.5 or more = delay feeds the reverb (never both, so they can't feed each other in a loop). */
+constexpr int kNumValues = 11;
+constexpr int kSendReverb = 8, kSendDelay = 9, kRouting = 10;
 
 struct SlotSettings
 {
@@ -34,6 +40,7 @@ inline SlotSettings DefaultSettings()
     s.v[kLp]   = 1.0f;
     s.v[kSendReverb] = 0.0f;
     s.v[kSendDelay]  = 0.0f;
+    s.v[kRouting]    = 0.0f;
     return s;
 }
 
@@ -55,6 +62,14 @@ class Engine
     /** Real-world value of knob i for the log (e.g. bits), and its unit text. */
     virtual float       KnobReal(int i, float v) const = 0;
     virtual const char* KnobUnit(int i) const    = 0;
+    /** Optional: a different log name for the shared knob 4-7 (gain, wet, hipass, lopass), or nullptr = the usual name. */
+    virtual const char* KnobNameOverride(int knob) const { (void)knob; return nullptr; }
+    /** Optional: text for the log instead of "number + unit" (knob 0-7). Return false = use the usual way. */
+    virtual bool        KnobLabel(int knob, float v, char* buf, size_t cap) const
+    {
+        (void)knob; (void)v; (void)buf; (void)cap;
+        return false;
+    }
     /** Starting values for this fx's own knobs. */
     virtual void        SetDefaults(SlotSettings& s) const { (void)s; }
 };

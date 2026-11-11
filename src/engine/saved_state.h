@@ -11,7 +11,7 @@
 
 struct SavedState
 {
-    static constexpr uint32_t kMagic = 0x50465802; // 'P' 'F' 'X' + layout version 2 (v1 had no send values)
+    static constexpr uint32_t kMagic = 0x50465803; // 'P' 'F' 'X' + layout version 3 (v2 had 10 values per slot, v3 adds the routing value)
 
     uint32_t         magic;
     float            input_offset; // the Params values, 0.0 - 1.0 (see params.h)
