@@ -11,7 +11,8 @@
 //  - Only ONE fx runs at a time. Switching fades from the old to the new over 5 ms.
 //  - The last button pressed is the "edit slot": the fx whose knobs you are editing.
 //  - BUS fx (the reverb on B1) is a SEND: while its button is on, the layer input is sent into the
-//    reverb; the dry signal is never touched; the wet knob (K6) is the reverb's return level.
+//    reverb; the wet knob (K6) is the reverb's return level, the output gain (K5) lifts dry + return,
+//    the lopass (K8) filters the DRY only, the hipass (K7) filters the return only.
 //    When you let go the input stops and the tail rings out. Any other fx can also feed the reverb with its
 //    send amount (Shift + K1 in edit mode). The reverb's return goes through that slot's
 //    gain / hipass / lopass.
@@ -153,7 +154,9 @@ class Layer
             float      ret_l[kMaxChunk], ret_r[kMaxChunk], bl[kMaxChunk], br[kMaxChunk];
             reverb_bus_->Process(feed_l_, feed_r_, ret_l, ret_r, n, settings_[bus_slot_], feeding);
             // the return: wet level, hipass, lopass, gain (the reverb slot's knobs 5-8)
-            bus_stage_.Process(zero_, zero_, ret_l, ret_r, bl, br, n, settings_[bus_slot_]);
+            SlotSettings ret_settings = settings_[bus_slot_];
+            ret_settings.v[kLp]       = 1.0f; // lopass off on the return (K8 filters the dry instead)
+            bus_stage_.Process(zero_, zero_, ret_l, ret_r, bl, br, n, ret_settings);
             for(size_t i = 0; i < n; i++)
             {
                 out_l[i] += bl[i];
@@ -263,6 +266,8 @@ class Layer
         {
             engines_[cur_]->Reset();
             stages_[cur_].Reset();
+            if(engines_[cur_]->IsBus())
+                dry_lp_prime_ = true;
             Emit(EventType::On, cur_);
         }
         else
@@ -299,13 +304,32 @@ class Layer
             // input to the reverb stopping and the tail rings out). The slot's wet knob (K6) is the
             // return level, applied to the reverb output in Process(). The OUTPUT GAIN (K5) applies to
             // the whole output while the reverb is on (dry here, reverb return in Process()).
-            const float g = std::pow(10.0f, GainDb(settings_[slot].v[kGain]) / 20.0f);
+            // The LOPASS (K8) filters the DRY only; the reverb return gets the hipass but no lopass.
+            const float g       = std::pow(10.0f, GainDb(settings_[slot].v[kGain]) / 20.0f);
+            const bool  lp_on   = LpOn(settings_[slot].v[kLp]);
+            if(lp_on)
+            {
+                dry_lp_[0].SetCutoff(LpHz(settings_[slot].v[kLp]), sr_);
+                dry_lp_[1].SetCutoff(LpHz(settings_[slot].v[kLp]), sr_);
+            }
             for(size_t i = 0; i < len; i++)
             {
                 const float gi = bus_last_gain_ + (g - bus_last_gain_) * static_cast<float>(i + 1) / static_cast<float>(len);
-                out_l[i]       = in_l[off + i] * gi;
-                out_r[i]       = in_r[off + i] * gi;
-                feed_l[i]      = in_l[off + i]; // the reverb is fed the un-gained input
+                float       dl = in_l[off + i], dr = in_r[off + i];
+                if(lp_on)
+                {
+                    if(dry_lp_prime_) // start the filter as if this level had been there for ever (no thump)
+                    {
+                        dry_lp_[0].Prime(dl);
+                        dry_lp_[1].Prime(dr);
+                        dry_lp_prime_ = false;
+                    }
+                    dl = dry_lp_[0].Process(dl, true);
+                    dr = dry_lp_[1].Process(dr, true);
+                }
+                out_l[i] = dl * gi;
+                out_r[i] = dr * gi;
+                feed_l[i]      = in_l[off + i]; // the reverb is fed the plain input (no gain, no lopass)
                 feed_r[i]      = in_r[off + i];
             }
             bus_last_gain_ = g;
@@ -367,6 +391,8 @@ class Layer
     int        bus_slot_   = -1;
     Stage      bus_stage_;                // gain / hipass / lopass / wet level of the reverb return
     float      bus_last_gain_ = 1.0f;     // for gliding the dry gain while the reverb slot is on
+    TwoPole    dry_lp_[2];                // the reverb slot's lopass (K8) on the dry signal
+    bool       dry_lp_prime_ = true;
     float      feed_l_[kMaxChunk], feed_r_[kMaxChunk]; // what is sent into the reverb this block
     float      zero_[kMaxChunk];
 
