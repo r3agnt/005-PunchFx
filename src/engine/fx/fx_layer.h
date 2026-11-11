@@ -10,9 +10,9 @@
 //    latch) takes over.
 //  - Only ONE fx runs at a time. Switching fades from the old to the new over 5 ms.
 //  - The last button pressed is the "edit slot": the fx whose knobs you are editing.
-//  - BUS fx (the reverb on B1): while its button is on, the layer input is sent into the reverb;
-//    the wet/dry knob crossfades the dry signal against the reverb. When you let go the dry
-//    comes back at once and the tail rings out. Any other fx can also feed the reverb with its
+//  - BUS fx (the reverb on B1) is a SEND: while its button is on, the layer input is sent into the
+//    reverb; the dry signal is never touched; the wet knob (K6) is the reverb's return level.
+//    When you let go the input stops and the tail rings out. Any other fx can also feed the reverb with its
 //    send amount (Shift + K1 in edit mode). The reverb's return goes through that slot's
 //    gain / hipass / lopass.
 //  - If the layer is not selected (buttons_active = false) button presses are ignored, but a
@@ -295,16 +295,16 @@ class Layer
         }
         if(engines_[slot]->IsBus())
         {
-            const float w = settings_[slot].v[kWet];
+            // A real SEND: the dry signal is untouched (so letting go changes nothing but the input
+            // to the reverb stopping and the tail just rings out). The slot's wet knob (K6) is the
+            // return level, applied to the reverb output in Process().
             for(size_t i = 0; i < len; i++)
             {
-                const float wi = bus_last_wet_ + (w - bus_last_wet_) * static_cast<float>(i + 1) / static_cast<float>(len);
-                out_l[i]       = in_l[off + i] * (1.0f - wi);
-                out_r[i]       = in_r[off + i] * (1.0f - wi);
-                feed_l[i]      = in_l[off + i];
-                feed_r[i]      = in_r[off + i];
+                out_l[i]  = in_l[off + i];
+                out_r[i]  = in_r[off + i];
+                feed_l[i] = in_l[off + i];
+                feed_r[i] = in_r[off + i];
             }
-            bus_last_wet_ = w;
             return;
         }
         float fl[kMaxChunk], fr[kMaxChunk];
@@ -362,7 +362,6 @@ class Layer
     ReverbBus* reverb_bus_ = nullptr;
     int        bus_slot_   = -1;
     Stage      bus_stage_;                // gain / hipass / lopass / wet level of the reverb return
-    float      bus_last_wet_ = 0.0f;
     float      feed_l_[kMaxChunk], feed_r_[kMaxChunk]; // what is sent into the reverb this block
     float      zero_[kMaxChunk];
 

@@ -579,13 +579,13 @@ static void TestReverbLayer()
         CHECK(err < 1e-4f, "reverb slot with wet 0%%: dry only (error %g)", err);
     }
     {
-        BusRig r; // hold B1 with wet = 100%: dry is gone, reverb only (echo arrives after 100 ms)
+        BusRig r; // hold B1 with wet = 100%: it is a SEND: dry stays at full level, the reverb is added on top
         r.settings[0].v[fx::kWet] = 1.0f;
         r.info.raw_mask = 1u << 0;
         r.Blocks(100); // 100 ms: the first 100 ms contain only the stand-in's direct 0.5*in part
         const float with_wet = Rms(r.out, 2400, 4800) / Rms(r.in, 2400, 4800);
-        const float expect   = 0.5f * fx::ReverbBus::kMakeup; // the stand-in passes 0.5 * input at once
-        CHECK(std::fabs(with_wet - expect) < 0.08f, "wet 100%%: the dry signal is replaced by the reverb (x%.2f, expected %.2f)", with_wet, expect);
+        const float expect   = 1.0f + 0.5f * fx::ReverbBus::kMakeup; // dry + the stand-in's direct part
+        CHECK(std::fabs(with_wet - expect) < 0.1f, "wet 100%%: dry stays and the reverb is added (x%.2f, expected %.2f)", with_wet, expect);
     }
     {
         BusRig r; // hold, then release: dry returns, the tail keeps ringing, then the bus turns itself off
@@ -593,8 +593,14 @@ static void TestReverbLayer()
         r.info.raw_mask = 1u << 0;
         r.Blocks(300); // 0.3 s
         CHECK(r.layer.GetStatus().reverb_ringing, "reverb running while held");
+        // letting go must not change the dry level: compare the output just before and just after the release
+        const size_t release_at = r.out.size();
         r.info.raw_mask = 0;
         r.Blocks(450);  // input ends at 0.4 s; we are at ~0.75 s
+        // (the input is still playing for 100 ms after the release: dry must be the same level as before it)
+        const float before_rel = Rms(r.out, release_at - 2400, release_at - 480);
+        const float after_rel  = Rms(r.out, release_at + 480 + 2400, release_at + 4800);
+        CHECK(std::fabs(after_rel - before_rel) < 0.35f * before_rel, "letting go does not jump the level (%.3f -> %.3f)", before_rel, after_rel);
         CHECK(Rms(r.out, 24000 - 4800, 24000) > 0.01f, "tail rings after the input stopped and the button was released");
         r.Blocks(3000);
         CHECK(!r.layer.GetStatus().reverb_ringing, "reverb switched itself off later");
