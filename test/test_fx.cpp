@@ -106,6 +106,17 @@ static void TestStage()
     auto lo = Sine(100, 48000), hi = Sine(5000, 48000);
     CHECK(Rms(RunStage(s, lo, lo), 4800, 48000) < 0.2f * Rms(lo, 4800, 48000), "hipass cuts 100 Hz");
     CHECK(std::fabs(Rms(RunStage(s, hi, hi), 4800, 48000) / Rms(hi, 4800, 48000) - 1.0f) < 0.02f, "hipass passes 5 kHz");
+    // The filter acts on the whole mix: with wet 0 the dry signal is filtered too.
+    s.v[fx::kWet] = 0.0f;
+    CHECK(Rms(RunStage(s, lo, silent), 4800, 48000) < 0.2f * Rms(lo, 4800, 48000), "hipass also filters the dry part of the mix");
+    // No start-up thump: a steady level fed to a fresh hipass gives (nearly) nothing out at once.
+    s.v[fx::kWet] = 1.0f;
+    std::vector<float> dc(4800, 0.5f);
+    auto od = RunStage(s, dc, dc);
+    float first = 0;
+    for(size_t i = 0; i < 200; i++)
+        first = std::max(first, std::fabs(od[i]));
+    CHECK(first < 0.01f, "hipass starts without a thump (%.4f)", first);
     // Lopass: knob 0.4 = 200*100^0.4 = 1264 Hz.
     s = fx::DefaultSettings();
     s.v[fx::kLp] = 0.4f;
@@ -118,33 +129,75 @@ static void TestBitCrush()
     std::printf("bit crusher\n");
     fx::BitCrush bc;
     bc.Init(kSr);
-    const auto in = Sine(300, 480);
-    std::vector<float> o(480), r(480);
-    float knobs[4] = {1.0f, 0.0f, 0, 0}; // 2 bits, no sample hold
-    bc.Process(in.data(), in.data(), o.data(), r.data(), 480, knobs);
-    // 2 bits: step = 2/4 = 0.5, so every output is a multiple of 0.5
+    const auto in = Sine(300, 4800);
+    const size_t N = 4800;
+    std::vector<float> o(N), r(N);
+    // knobs: 0 pre lopass (1 = off), 1 noise, 2 bit depth, 3 sample rate
+    float knobs[4] = {1.0f, 0.0f, 1.0f, 0.0f}; // 1 bit, no noise, no hold
+    bc.Process(in.data(), in.data(), o.data(), r.data(), N, knobs);
     bool on_grid = true;
     for(float x : o)
-        if(std::fabs(x / 0.5f - std::round(x / 0.5f)) > 1e-4f)
+        if(std::fabs(x - std::round(x)) > 1e-4f)
             on_grid = false;
-    CHECK(on_grid, "2-bit output only takes steps of 0.5");
+    CHECK(on_grid, "1-bit output only takes whole steps (-1, 0, 1)");
 
-    knobs[0] = 0.0f; // 16 bits
-    bc.Process(in.data(), in.data(), o.data(), r.data(), 480, knobs);
+    knobs[2] = 0.0f; // 12 bits
+    bc.Process(in.data(), in.data(), o.data(), r.data(), N, knobs);
     float worst = 0;
-    for(size_t i = 0; i < 480; i++)
+    for(size_t i = 0; i < N; i++)
         worst = std::max(worst, std::fabs(o[i] - in[i]));
-    CHECK(worst < 0.0001f, "16 bits is nearly transparent (error %g)", worst);
+    CHECK(worst < 0.0003f, "12 bits is nearly transparent (error %g)", worst);
 
-    knobs[0] = 0.0f;
-    knobs[1] = 1.0f; // hold 32
+    // bit depth: the knob must make an audible difference in the first half of its travel too
+    CHECK(fx::BitCrush::Bits(0.5f) < 6.0f && fx::BitCrush::Bits(0.25f) < 9.0f, "depth curve: %.1f bits at half, %.1f at a quarter", fx::BitCrush::Bits(0.5f), fx::BitCrush::Bits(0.25f));
+
+    // noise: 0 = none; more noise = more difference from a clean 12-bit signal, and it scales with the crush
+    float err[3];
+    const float noise_k[3] = {0.0f, 0.5f, 1.0f};
+    for(int t = 0; t < 3; t++)
+    {
+        knobs[1] = noise_k[t];
+        knobs[2] = 0.0f;
+        bc.Reset();
+        bc.Process(in.data(), in.data(), o.data(), r.data(), N, knobs);
+        double e = 0;
+        for(size_t i = 0; i < N; i++)
+            e += (o[i] - in[i]) * (o[i] - in[i]);
+        err[t] = static_cast<float>(std::sqrt(e / N));
+    }
+    CHECK(err[0] < 0.0003f && err[1] > 0.002f && err[2] > err[1], "noise knob adds noise (%.5f, %.5f, %.5f)", err[0], err[1], err[2]);
+    knobs[2] = 0.7f; // a crushed signal gets more noise than a clean one
+    knobs[1] = 1.0f;
     bc.Reset();
-    bc.Process(in.data(), in.data(), o.data(), r.data(), 480, knobs);
+    bc.Process(in.data(), in.data(), o.data(), r.data(), N, knobs);
+    double e2 = 0;
+    for(size_t i = 0; i < N; i++)
+        e2 += (o[i] - in[i]) * (o[i] - in[i]);
+    CHECK(std::sqrt(e2 / N) > 2.0 * err[2], "noise is stronger at a lower bit depth");
+
+    // sample hold
+    knobs[1] = 0.0f;
+    knobs[2] = 0.0f;
+    knobs[3] = 1.0f; // hold 48
+    bc.Reset();
+    bc.Process(in.data(), in.data(), o.data(), r.data(), N, knobs);
     bool held = true;
-    for(size_t i = 0; i < 480; i++)
-        if(o[i] != o[(i / 32) * 32])
+    for(size_t i = 0; i < N; i++)
+        if(o[i] != o[(i / 48) * 48])
             held = false;
-    CHECK(held, "sample hold 32 repeats each value for 32 samples");
+    CHECK(held, "sample rate knob full = each value held for 48 samples");
+
+    // pre lopass: knob 0.4 = 1264 Hz cuts 5 kHz, passes 100 Hz
+    knobs[0] = 0.4f;
+    knobs[3] = 0.0f;
+    const auto hi = Sine(5000, N), lo = Sine(100, N);
+    bc.Reset();
+    bc.Process(hi.data(), hi.data(), o.data(), r.data(), N, knobs);
+    const float r_hi = Rms(o, 480, N) / Rms(hi, 480, N);
+    bc.Reset();
+    bc.Process(lo.data(), lo.data(), o.data(), r.data(), N, knobs);
+    const float r_lo = Rms(o, 480, N) / Rms(lo, 480, N);
+    CHECK(r_hi < 0.2f && std::fabs(r_lo - 1.0f) < 0.03f, "pre lopass cuts 5 kHz (%.3f) and passes 100 Hz (%.3f)", r_hi, r_lo);
 }
 
 /** Drives a Layer in blocks of 48 with a fake clock. Output goes to `out`. */

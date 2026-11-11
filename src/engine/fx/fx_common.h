@@ -1,7 +1,8 @@
 #pragma once
-// The part every fx shares (knobs 5-8): hipass, lopass, output gain and wet/dry.
-// Plain C++ (no libDaisy). Signal path inside one fx slot:
-//   fx output -> hipass -> lopass -> gain  = "wet";   result = dry * (1 - wet%) + wet * wet%
+// The part every fx shares (knobs 5-8): wet/dry, hipass, lopass and output gain.
+// Plain C++ (no libDaisy). Signal path inside one fx slot (all in SERIES, one after the other):
+//   mix = dry * (1 - wet%) + fx * wet%   ->   hipass   ->   lopass   ->   gain
+// The filters and gain act on the whole mix (dry too), so mixing never makes a phasey sound.
 #include <cmath>
 #include <cstddef>
 #include "fx_engine.h"
@@ -25,6 +26,12 @@ class TwoPole
 {
   public:
     void Reset() { ic1_ = ic2_ = 0.0f; }
+    /** Start as if the input had been x for ever (a hipass then gives 0 at once, no start-up thump). */
+    void Prime(float x)
+    {
+        ic1_ = 0.0f;
+        ic2_ = x;
+    }
     void SetCutoff(float hz, float sample_rate)
     {
         const float k = 1.41421356f; // 1 / Q
@@ -66,8 +73,10 @@ class Stage
     {
         for(int c = 0; c < 2; c++)
             hp_[c].Reset(), lp_[c].Reset();
+        prime_ = true; // the first sample after a Reset sets the filters' starting state
     }
-    /** dry = the signal that went into the fx, fx = what the fx made of it. Writes the result to out.
+    /** dry = the signal that went into the fx, fx = what the fx made of it. Writes the result to out
+     *  (out may be the same arrays as dry).
      *  `s` = knob values 4-7 (see kGain...). Gain and wet/dry glide across the block (no clicks). */
     void Process(const float* dry_l, const float* dry_r, const float* fx_l, const float* fx_r,
                  float* out_l, float* out_r, size_t n, const SlotSettings& s)
@@ -82,6 +91,11 @@ class Stage
             if(lp_on)
                 lp_[c].SetCutoff(LpHz(s.v[kLp]), sr_);
         }
+        if(prime_) // a fresh start: no gliding from old settings
+        {
+            last_gain_ = gain;
+            last_wet_  = wet;
+        }
         const float inv = n ? 1.0f / static_cast<float>(n) : 0.0f;
         for(size_t i = 0; i < n; i++)
         {
@@ -91,14 +105,23 @@ class Stage
             for(int c = 0; c < 2; c++)
             {
                 const float dry = c == 0 ? dry_l[i] : dry_r[i];
-                float       x   = c == 0 ? fx_l[i] : fx_r[i];
+                const float fxs = c == 0 ? fx_l[i] : fx_r[i];
+                float       x   = dry * (1.0f - w) + fxs * w; // 1. wet/dry
+                if(prime_)
+                {
+                    // Start the filters as if this level had been there for ever: no thump.
+                    if(hp_on)
+                        hp_[c].Prime(x);
+                    if(lp_on)
+                        lp_[c].Prime(hp_on ? 0.0f : x);
+                }
                 if(hp_on)
-                    x = hp_[c].Process(x, false);
+                    x = hp_[c].Process(x, false); // 2. hipass
                 if(lp_on)
-                    x = lp_[c].Process(x, true);
-                x *= g;
-                (c == 0 ? out_l : out_r)[i] = dry * (1.0f - w) + x * w;
+                    x = lp_[c].Process(x, true);  // 3. lopass
+                (c == 0 ? out_l : out_r)[i] = x * g; // 4. gain
             }
+            prime_ = false;
         }
         last_gain_ = gain;
         last_wet_  = wet;
@@ -106,6 +129,7 @@ class Stage
 
   private:
     float    sr_ = 48000.0f, last_gain_ = 1.0f, last_wet_ = 1.0f;
+    bool     prime_ = true;
     TwoPole  hp_[2], lp_[2];
 };
 

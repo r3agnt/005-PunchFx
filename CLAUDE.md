@@ -38,8 +38,8 @@ Also: once a feature is tested on hardware, fold its checklist into "Passed" in 
 - You cannot flash or hear the hardware: say clearly what is built-but-untested and tell me what to check.
 - Keep sessions short: one task per session, commit when it works (see `docs/WORKFLOW.md`).
 
-## Current state (v0.10.0, built, NOT yet flashed; 0.9.0 not flashed either)
-Layers: 3-way toggle (up/middle/down = 1/2/3), 2-way toggle = edit/perf. **Layer 1** = MIDI clock/transport follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars); beat repeat on B9-B16 (quantised to 1/16, latch on Shift+B9-B16); B6 pitch-down on the beat repeat. Slice mode removed (idea kept in `docs/IDEAS.md`). **Layer 2 (0.10.0)** = punch-in fx framework (`src/engine/fx/`: `fx_layer.h` buttons/latch/quantise/crossfade, `fx_common.h` shared stage, `fx_engine.h` interface, `fx_bitcrush.h`); only B7 bit crusher exists, the other 14 slots log "not built yet". Settings not saved yet.
+## Current state (v0.10.1; 0.10.0 flashed, layers + bit crusher work)
+Layers: 3-way toggle (up/middle/down = 1/2/3), 2-way toggle = edit/perf. **Layer 1** = MIDI clock/transport follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars); beat repeat on B9-B16 (quantised to 1/16, latch on Shift+B9-B16); B6 pitch-down on the beat repeat. Slice mode removed (idea kept in `docs/IDEAS.md`). **Layer 2 (0.10.0)** = punch-in fx framework (`src/engine/fx/`: `fx_layer.h` buttons/latch/quantise/crossfade, `fx_common.h` shared stage, `fx_engine.h` interface, `fx_bitcrush.h`); only B7 bit crusher exists (pre lopass, noise, depth, rate), the other 14 slots log "not built yet". Settings not saved yet.
 Signal chain: input gain -> beat repeat -> pitch fx -> looper -> SoftClip -> output level, ceiling 0.9 (`docs/ARCHITECTURE.md`).
 Controls: tables in `src/params.h` (`kPotMap`, `kCcMap`); B8 = SHIFT; soft takeover on knobs. Full list in `docs/HARDWARE_MAP.md`.
 Firmware version prints on serial at boot and on Shift + B16 long press. **USB MIDI is disabled** (USB carries serial logging); DIN MIDI works.
