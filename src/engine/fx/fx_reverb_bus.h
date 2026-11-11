@@ -2,7 +2,7 @@
 // The REVERB BUS (plain C++): pre-delay + a reverb core, which keeps running after its input stops
 // until the tail has died away, then switches itself off (saves CPU).
 // The real reverb core on the Seed is DaisySP's ReverbSc (src/modules/reverb_core.h); the Mac tests
-// use a simple stand-in. Controls (the reverb slot's knobs): K1 Time, K2 Tone, K3 Pre-delay.
+// use a simple stand-in. Controls (the reverb slot's knobs): K1 Time (tail length 0.4-12 s), K2 Tone, K3 Pre-delay (0-100 ms).
 #include <cmath>
 #include <cstddef>
 #include "fx_engine.h"
@@ -25,9 +25,17 @@ class ReverbCore
 class ReverbBus
 {
   public:
-    static float Feedback(float v) { return 0.5f + 0.48f * v; }          // knob -> 0.50 .. 0.98
-    static float ToneHz(float v) { return 800.0f * std::pow(22.5f, v); } // knob -> 800 Hz .. 18 kHz
-    static float PreDelayMs(float v) { return v * 200.0f; }              // knob -> 0 .. 200 ms
+    // K1 TIME is scaled by the TAIL LENGTH (how long the reverb takes to fade by 60 dB) in even
+    // steps (each knob step multiplies the length by the same amount), then converted into the
+    // feedback amount ReverbSc wants. ReverbSc's 8 delay lines are 62.8 ms long on average and lose
+    // "feedback" every pass, so  feedback = 10 ^ (-3 * 0.0628 / tail_seconds).
+    static constexpr float kTimeMinS    = 0.4f;    // tail length with the knob at 0
+    static constexpr float kTimeMaxS    = 12.0f;   // ... and at 1
+    static constexpr float kMeanDelayS  = 0.0628f; // average delay line length in ReverbSc
+    static float TailSeconds(float v) { return kTimeMinS * std::pow(kTimeMaxS / kTimeMinS, v); }
+    static float Feedback(float v) { return std::pow(10.0f, -3.0f * kMeanDelayS / TailSeconds(v)); }
+    static float ToneHz(float v) { return 800.0f * std::pow(22.5f, v); } // K2: knob -> 800 Hz .. 18 kHz
+    static float PreDelayMs(float v) { return v * 100.0f; }              // K3: knob -> 0 .. 100 ms
     /** Fixed make-up gain on the reverb output (ReverbSc is quiet): 2.5 = +8 dB. K5 adds up to +8 dB more. */
     static constexpr float kMakeup = 2.5f;
 
@@ -141,21 +149,21 @@ class ReverbSlot : public Engine
     float KnobReal(int i, float v) const override
     {
         if(i == 0)
-            return ReverbBus::Feedback(v) * 100.0f;
+            return ReverbBus::TailSeconds(v);
         if(i == 1)
             return ReverbBus::ToneHz(v);
         return ReverbBus::PreDelayMs(v);
     }
     const char* KnobUnit(int i) const override
     {
-        static const char* const kUnits[3] = {"%", " Hz", " ms"};
+        static const char* const kUnits[3] = {" s", " Hz", " ms"};
         return (i >= 0 && i < 3) ? kUnits[i] : "";
     }
     void SetDefaults(SlotSettings& s) const override
     {
-        s.v[0]     = 0.6f; // time
-        s.v[1]     = 0.7f; // tone
-        s.v[2]     = 0.1f; // pre-delay 20 ms
+        s.v[0]     = 0.78f;   // time: about 5.7 s
+        s.v[1]     = 0.5678f; // tone: 4686 Hz
+        s.v[2]     = 0.0f;    // pre-delay: 0 ms
         s.v[kWet]  = 0.4f; // 40% reverb
     }
 };

@@ -452,13 +452,32 @@ static void TestReverbBus()
 {
     std::printf("reverb bus\n");
     {
+        // Time knob: scaled by tail length, in even (geometric) steps, and back-checked against the feedback maths
+        using B = fx::ReverbBus;
+        CHECK(std::fabs(B::TailSeconds(0.0f) - 0.4f) < 1e-4f && std::fabs(B::TailSeconds(1.0f) - 12.0f) < 1e-3f, "time knob: 0.4 s .. 12 s");
+        CHECK(std::fabs(B::TailSeconds(0.5f) - std::sqrt(0.4f * 12.0f)) < 1e-3f, "time knob: the middle is the geometric middle (%.2f s)", B::TailSeconds(0.5f));
+        const float r1 = B::TailSeconds(0.6f) / B::TailSeconds(0.5f), r2 = B::TailSeconds(0.9f) / B::TailSeconds(0.8f);
+        CHECK(std::fabs(r1 - r2) < 1e-3f, "equal knob steps give equal tail-length ratios");
+        for(float v = 0.0f; v <= 1.0f; v += 0.1f)
+        {
+            const float fb = B::Feedback(v);
+            const float db60 = fb > 0.0f ? B::kMeanDelayS / B::TailSeconds(v) * 3.0f + std::log10(fb) : 99.0f; // = 0 if consistent
+            CHECK(fb > 0.2f && fb < 0.97f && std::fabs(db60) < 1e-3f, "feedback %.3f for knob %.1f (tail %.2f s)", fb, v, B::TailSeconds(v));
+        }
+        CHECK(std::fabs(B::ToneHz(0.5678f) - 4686.0f) < 5.0f, "default tone is 4686 Hz (%.0f)", B::ToneHz(0.5678f));
+        CHECK(std::fabs(B::PreDelayMs(1.0f) - 100.0f) < 1e-3f && B::PreDelayMs(0.0f) == 0.0f, "pre-delay 0 .. 100 ms");
+        fx::SlotSettings d = fx::DefaultSettings();
+        fx::ReverbSlot().SetDefaults(d);
+        CHECK(d.v[2] == 0.0f && std::fabs(B::ToneHz(d.v[1]) - 4686.0f) < 5.0f, "defaults: pre-delay 0, tone 4686 Hz");
+    }
+    {
         // pre-delay: an impulse comes out of the reverb only after the pre-delay
         static EchoCore core;
         static fx::ReverbBus bus;
         bus.Init(kSr, &core);
         fx::SlotSettings s = fx::DefaultSettings();
         s.v[0] = 0.0f; // time
-        s.v[2] = 0.5f; // pre-delay 100 ms = 4800 samples
+        s.v[2] = 1.0f; // pre-delay 100 ms (the maximum) = 4800 samples
         std::vector<float> in(9600, 0.0f), zl(9600), zr(9600);
         in[0] = 1.0f;
         for(int pass = 0; pass < 200; pass++) // let the pre-delay glide settle (it glides per block)
