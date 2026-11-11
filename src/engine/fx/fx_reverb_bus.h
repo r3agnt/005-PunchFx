@@ -22,6 +22,37 @@ class ReverbCore
     virtual void Process(float in_l, float in_r, float* out_l, float* out_r) = 0;
 };
 
+/** A Schroeder allpass filter: passes every frequency at the same level but smears the timing, so one
+ *  click becomes a short dense burst. Used to diffuse the input of the reverb. No constructor on purpose
+ *  (it lives inside the bus, which lives in SDRAM): call Init() before use. */
+class Allpass
+{
+  public:
+    static constexpr size_t kMax = 1024;
+    void Init(size_t length, float gain)
+    {
+        len_ = length < 1 ? 1 : (length > kMax ? kMax : length);
+        g_   = gain;
+        idx_ = 0;
+        for(size_t i = 0; i < kMax; i++)
+            buf_[i] = 0.0f;
+    }
+    float Process(float x)
+    {
+        const float old = buf_[idx_];
+        const float w   = x + g_ * old;
+        buf_[idx_]      = w;
+        if(++idx_ >= len_)
+            idx_ = 0;
+        return old - g_ * w;
+    }
+
+  private:
+    float  buf_[kMax];
+    size_t len_, idx_;
+    float  g_;
+};
+
 class ReverbBus
 {
   public:
@@ -36,6 +67,17 @@ class ReverbBus
     static float Feedback(float v) { return std::pow(10.0f, -3.0f * kMeanDelayS / TailSeconds(v)); }
     static float ToneHz(float v) { return 800.0f * std::pow(22.5f, v); } // K2: knob -> 800 Hz .. 18 kHz
     static float PreDelayMs(float v) { return v * 100.0f; }              // K3: knob -> 0 .. 100 ms
+
+    // INPUT DIFFUSION (fixed): 4 allpass filters per side in front of the reverb core, so the first
+    // echoes of its 8 delay lines (which come out sparse and bright, like a slapback) are blurred
+    // into a dense burst. Lengths in samples at 48 kHz (left / right differ a little).
+    static constexpr size_t kApCount    = 4;
+    static constexpr float  kApGain     = 0.7f;
+    static constexpr size_t kApLen(int side, size_t k)
+    {
+        return side == 0 ? (k == 0 ? 142 : k == 1 ? 107 : k == 2 ? 379 : 277)
+                         : (k == 0 ? 151 : k == 1 ? 113 : k == 2 ? 397 : 293);
+    }
     /** Fixed make-up gain on the reverb output (ReverbSc is quiet): 2.5 = +8 dB. K5 adds up to +8 dB more. */
     static constexpr float kMakeup = 2.5f;
 
@@ -52,7 +94,14 @@ class ReverbBus
         pd_      = 0.0f;
         quiet_   = 0;
         running_ = false;
+        diffuse_ = true;
+        for(int side = 0; side < 2; side++)
+            for(size_t k = 0; k < kApCount; k++)
+                ap_[side][k].Init(static_cast<size_t>(static_cast<float>(kApLen(side, k)) * sample_rate / 48000.0f + 0.5f), kApGain);
     }
+
+    /** Switch the input diffusion on/off (on after Init; the Mac tests switch it off to measure other things). */
+    void SetDiffusion(bool on) { diffuse_ = on; }
 
     /** True while the reverb is running (fed, or its tail is still audible). */
     bool Running() const { return running_; }
@@ -90,9 +139,15 @@ class ReverbBus
             const size_t i0   = static_cast<size_t>(rp) & kMask;
             const size_t i1   = (i0 + 1) & kMask;
             const float  frac = rp - std::floor(rp);
-            const float  dl   = pre_[0][i0] * (1.0f - frac) + pre_[0][i1] * frac;
-            const float  dr   = pre_[1][i0] * (1.0f - frac) + pre_[1][i1] * frac;
+            float        dl   = pre_[0][i0] * (1.0f - frac) + pre_[0][i1] * frac;
+            float        dr   = pre_[1][i0] * (1.0f - frac) + pre_[1][i1] * frac;
             w_                = (w_ + 1) & kMask;
+            if(diffuse_)
+                for(size_t k = 0; k < kApCount; k++)
+                {
+                    dl = ap_[0][k].Process(dl);
+                    dr = ap_[1][k].Process(dr);
+                }
             core_->Process(dl, dr, &ret_l[i], &ret_r[i]);
             peak = std::fmax(peak, std::fmax(std::fabs(ret_l[i]), std::fabs(ret_r[i])));
         }
@@ -123,7 +178,8 @@ class ReverbBus
     ReverbCore*  core_;
     float        pre_[2][kSize];
     size_t       w_, quiet_;
-    bool         running_;
+    bool         running_, diffuse_;
+    Allpass      ap_[2][kApCount];
 };
 
 /** The reverb's slot (B1): knob names and defaults. The audio is handled by the layer + ReverbBus. */

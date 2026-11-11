@@ -452,6 +452,62 @@ static void TestReverbBus()
 {
     std::printf("reverb bus\n");
     {
+        // input diffusion: an allpass keeps the level and smears a click into a dense burst
+        static fx::Allpass ap;
+        ap.Init(142, 0.7f);
+        double e_in = 0, e_out = 0;
+        unsigned seed = 7;
+        for(int i = 0; i < 48000; i++)
+        {
+            seed    = seed * 1664525u + 1013904223u;
+            float x = (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f) * 0.5f;
+            const float y = ap.Process(x);
+            e_in += static_cast<double>(x) * x;
+            e_out += static_cast<double>(y) * y;
+        }
+        CHECK(std::fabs(std::sqrt(e_out / e_in) - 1.0) < 0.02, "an allpass keeps the level (x%.3f)", std::sqrt(e_out / e_in));
+
+        static fx::ReverbBus bus;
+        static EchoCore       core;
+        core = EchoCore();
+        core.fb = 0.0f;
+        bus.Init(kSr, &core);
+        fx::SlotSettings s = fx::DefaultSettings();
+        s.v[0] = 0.0f;
+        s.v[2] = 0.0f; // no pre-delay
+        // one click in: with diffusion the output is a spread-out burst, not one spike; energy is kept
+        auto Burst = [&](bool diffuse, float& peak, int& nonzero, double& energy) {
+            bus.Init(kSr, &core);
+            bus.SetDiffusion(diffuse);
+            core = EchoCore();
+            core.fb = 0.0f;
+            std::vector<float> in(2400, 0.0f);
+            in[0] = 1.0f;
+            peak = 0;
+            nonzero = 0;
+            energy  = 0;
+            for(size_t t = 0; t < in.size(); t += kBlock)
+            {
+                float l[kBlock], r[kBlock];
+                bus.Process(&in[t], &in[t], l, r, kBlock, s, true);
+                for(size_t i = 0; i < kBlock; i++)
+                {
+                    const float x = l[i] / fx::ReverbBus::kMakeup;
+                    peak          = std::max(peak, std::fabs(x));
+                    nonzero += std::fabs(x) > 0.01f ? 1 : 0;
+                    energy += static_cast<double>(x) * x;
+                }
+            }
+        };
+        float peak_off, peak_on;
+        int   nz_off, nz_on;
+        double en_off, en_on;
+        Burst(false, peak_off, nz_off, en_off);
+        Burst(true, peak_on, nz_on, en_on);
+        CHECK(nz_on > 10 * nz_off && peak_on < 0.7f * peak_off, "diffusion spreads a click (%d samples above 1%% vs %d, peak %.2f vs %.2f)", nz_on, nz_off, peak_on, peak_off);
+        CHECK(std::fabs(en_on / en_off - 1.0) < 0.1, "...and keeps its energy (x%.2f)", en_on / en_off);
+    }
+    {
         // Time knob: scaled by tail length, in even (geometric) steps, and back-checked against the feedback maths
         using B = fx::ReverbBus;
         CHECK(std::fabs(B::TailSeconds(0.0f) - 0.4f) < 1e-4f && std::fabs(B::TailSeconds(1.0f) - 12.0f) < 1e-3f, "time knob: 0.4 s .. 12 s");
@@ -475,6 +531,7 @@ static void TestReverbBus()
         static EchoCore core;
         static fx::ReverbBus bus;
         bus.Init(kSr, &core);
+        bus.SetDiffusion(false); // exact arrival time
         fx::SlotSettings s = fx::DefaultSettings();
         s.v[0] = 0.0f; // time
         s.v[2] = 1.0f; // pre-delay 100 ms (the maximum) = 4800 samples
@@ -545,12 +602,13 @@ struct BusRig
     fx::BlockInfo    info;
     std::vector<float> in, out;
     size_t           t = 0;
-    BusRig()
+    explicit BusRig(bool diffuse = false)
     {
         for(auto& s : settings)
             s = fx::DefaultSettings();
         layer.Init(kSr, settings);
         bus.Init(kSr, &core);
+        bus.SetDiffusion(diffuse);
         layer.SetReverbBus(&bus, 0);
         layer.SetEngine(0, &slot);
         layer.SetEngine(1, &half);
@@ -628,6 +686,14 @@ static void TestReverbLayer()
         const float with_ret = Rms(q.out, 2400, 4800) / Rms(q.in, 2400, 4800);
         const float expect   = 0.5f * fx::ReverbBus::kMakeup; // return only (dry is lowpassed away)
         CHECK(std::fabs(with_ret - expect) < 0.2f, "the reverb return is NOT lowpassed (x%.2f, expected %.2f)", with_ret, expect);
+        BusRig d(true); // same with the input diffusion on: the return level is the same
+        d.in = r.in;
+        d.settings[0].v[fx::kWet] = 1.0f;
+        d.settings[0].v[fx::kLp]  = lp_knob;
+        d.info.raw_mask = 1u << 0;
+        d.Blocks(100);
+        const float with_diff = Rms(d.out, 2400, 4800) / Rms(d.in, 2400, 4800);
+        CHECK(std::fabs(with_diff - expect) < 0.25f, "input diffusion keeps the return level (x%.2f, expected %.2f)", with_diff, expect);
     }
     {
         BusRig r; // hold B1 with wet = 100%: it is a SEND: dry stays at full level, the reverb is added on top
