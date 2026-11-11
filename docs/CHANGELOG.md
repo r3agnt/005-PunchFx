@@ -3,6 +3,7 @@
 Newest first, ONE line per version. Details (why, how, test counts) go in the git commit message.
 Full history up to 004-Looper v0.8.1: `docs/archive/CHANGELOG_FULL.md` (not loaded each session).
 
+- **0.12.1** - FIX: 0.12.0 froze at power-up (ReverbBus in SDRAM had a constructor that ran before the SDRAM was on). ReverbBus now has no constructor + a compile-time check.
 - **0.12.0** - Reverb bus on B1 (DaisySP ReverbSc, LGPL on): time/tone/pre-delay, tail rings out, auto-off; per-fx reverb send on Shift + K1; SavedState layout v2 (saved fx settings reset once).
 - **0.11.0** - Settings saved to flash: fx settings + loop length/input gain/output level/offset, on edit -> perf; loaded at power-up; Shift at power-up resets. `saved_state.h`, `test_saved_state.cpp`.
 - **0.10.3** - Bit crusher is mono, followed by a mild fixed stereo flanger (`fx_flanger_core.h`, reusable).

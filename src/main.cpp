@@ -22,6 +22,7 @@
  *  See docs/ARCHITECTURE.md for a longer explanation.
  */
 #include <cmath>
+#include <type_traits>
 #include "desktop_devkit.h"
 #include "userinterface.h"
 #include "params.h"
@@ -99,7 +100,12 @@ static fx::BitCrush fx_bitcrush; // slot 6 = button 7
 /** The reverb (slot 0 = button 1): a bus. ReverbSc itself is big (395 KB), so it lives in SDRAM too. */
 DSY_SDRAM_BSS static daisysp::ReverbSc sc_reverb;
 static ScReverbCore  reverb_core;
-DSY_SDRAM_BSS static fx::ReverbBus reverb_bus; // pre-delay memory (131 KB) is too big for the fast RAM
+/** The bus's pre-delay memory (131 KB) is too big for the fast RAM, so it is in SDRAM too. */
+DSY_SDRAM_BSS static fx::ReverbBus reverb_bus;
+/** An object in SDRAM must NOT have a constructor: it would run at power-up before the SDRAM is
+ *  switched on and freeze the Seed (this happened in 0.12.0). Init() sets everything instead. */
+static_assert(std::is_trivially_default_constructible<fx::ReverbBus>::value,
+              "ReverbBus lives in SDRAM and must have no constructor");
 static fx::ReverbSlot fx_reverb_slot;
 
 /** SAVING (0.11.0): the fx settings and the four layer 1 settings are kept in the Seed's flash

@@ -37,7 +37,7 @@ class ReverbBus
         for(size_t i = 0; i < kSize; i++)
             pre_[0][i] = pre_[1][i] = 0.0f;
         // Set EVERY starting value here: on the Seed this object lives in SDRAM, which is not
-        // cleared at power-up and does not run constructors.
+        // cleared at power-up and must not have a constructor.
         w_       = 0;
         pd_      = 0.0f;
         quiet_   = 0;
@@ -101,11 +101,14 @@ class ReverbBus
   private:
     static constexpr size_t kSize = 16384; // 340 ms, enough for the 200 ms pre-delay
     static constexpr size_t kMask = kSize - 1;
-    float        sr_   = 48000.0f, pd_ = 0.0f;
-    ReverbCore*  core_ = nullptr;
+    // NO "= value" defaults here on purpose: this object lives in SDRAM on the Seed, and a
+    // constructor would run before the SDRAM is switched on (that froze the 0.12.0 firmware).
+    // Init() sets every member instead.
+    float        sr_, pd_;
+    ReverbCore*  core_;
     float        pre_[2][kSize];
-    size_t       w_ = 0, quiet_ = 0;
-    bool         running_ = false;
+    size_t       w_, quiet_;
+    bool         running_;
 };
 
 /** The reverb's slot (B1): knob names and defaults. The audio is handled by the layer + ReverbBus. */
