@@ -16,7 +16,7 @@ code simple, heavily commented in plain English, and explain changes in plain te
 @docs/HARDWARE_MAP.md
 
 ## Cleanup rule (keeps sessions cheap)
-Size limits: `CLAUDE.md` + the two imports **25 KB total**; `CHANGELOG.md` **6 KB**; `HARDWARE_TEST.md` **5 KB**; `DESIGN_LOOPER.md` **16 KB**. Checked at the start of every session and after every version bump. Over a limit = propose a cleanup (list the cuts, wait for my OK):
+Size limits: `CLAUDE.md` + the two imports **25 KB total**; `CHANGELOG.md` **6 KB**; `HARDWARE_TEST.md` **5 KB**; `DESIGN_LOOPER.md` **16 KB**; `DESIGN_FX.md` **10 KB**. Checked at the start of every session and after every version bump. Over a limit = propose a cleanup (list the cuts, wait for my OK):
 - Changelog / test results: older entries move to `docs/archive/` (append to the `*_FULL.md` file), active file keeps one line per version and only open items.
 - `DESIGN_LOOPER.md`: delete rewrite history and replaced behaviour; keep current rules only. `CLAUDE.md`: no per-version history.
 - Archive = move, never delete. Doc-only commit, no version bump.
@@ -28,6 +28,7 @@ Also: once a feature is tested on hardware, fold its checklist into "Passed" in 
 | `docs/DESIGN_LOOPER.md` | changing looper / beat repeat / pitch fx behaviour (agreed rules, memory table) |
 | `docs/CHANGELOG.md` | adding a version line (one line per version only) |
 | `docs/HARDWARE_TEST.md` | recording hardware test results |
+| `docs/DESIGN_FX.md` | working on layer 2 fx (rules, reverb/bit crusher as built, delay plan, later fx) |
 | `docs/WORKFLOW.md` | planning how to split up work / where each doc update goes |
 | `docs/archive/` | almost never: old full changelog, test checklists, old design text |
 
@@ -39,22 +40,16 @@ Also: once a feature is tested on hardware, fold its checklist into "Passed" in 
 - You cannot flash or hear the hardware: say clearly what is built-but-untested and tell me what to check.
 - Keep sessions short: one task per session, commit when it works (see `docs/WORKFLOW.md`).
 
-## Current state (v0.12.1: reverb built, NOT yet flashed; 0.12.0 froze at boot, fixed; 0.11.0 and earlier tested OK)
-Layers: 3-way toggle (up/middle/down = 1/2/3), 2-way toggle = edit/perf. **Layer 1** = MIDI clock/transport follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars); beat repeat on B9-B16 (quantised to 1/16, latch on Shift+B9-B16); B6 pitch-down on the beat repeat. Slice mode removed (idea kept in `docs/IDEAS.md`). **Layer 2 (0.10.0)** = punch-in fx framework (`src/engine/fx/`: `fx_layer.h` buttons/latch/quantise/crossfade, `fx_common.h` shared stage, `fx_engine.h` interface, `fx_bitcrush.h`); B1 reverb (bus: `fx_reverb_bus.h`, ReverbSc, sends via Shift+K1) and B7 bit crusher exist, the other 13 slots log "not built yet". Settings are saved to flash (0.11.0).
-Signal chain: input gain -> beat repeat -> pitch fx -> looper -> SoftClip -> output level, ceiling 0.9 (`docs/ARCHITECTURE.md`).
-Controls: tables in `src/params.h` (`kPotMap`, `kCcMap`); B8 = SHIFT; soft takeover on knobs. Full list in `docs/HARDWARE_MAP.md`.
-Firmware version prints on serial at boot and on Shift + B16 long press. **USB MIDI is disabled** (USB carries serial logging); DIN MIDI works.
+## Current state (v0.12.8, flashed and tested: layers, bit crusher, flash save, reverb)
+Layers (3-way toggle up/middle/down = 1/2/3; 2-way toggle = edit/perf). **Layer 1** = MIDI clock follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars; Shift+K1 input gain, Shift+K2 output level, Shift+K3 input offset); beat repeat B9-B16 (1/16 quantised, latch Shift+B9-B16); B6 pitch-down on the beat repeat. **Layer 2** = punch-in fx (`src/engine/fx/`): B1 reverb bus and B7 bit crusher built, the other 13 slots log "not built yet". **Layer 3** = tbd. Settings saved to flash. Slice mode was removed (idea in `docs/IDEAS.md`).
+Signal chain: input gain -> beat repeat -> pitch fx -> looper -> layer 2 fx -> SoftClip -> output level, ceiling 0.9 (`docs/ARCHITECTURE.md`).
+Controls: layer 1 tables in `src/params.h` (`kPotMap`, `kCcMap`); layer 2 knobs in `MainPage::HandleFxKnob`; B8 = SHIFT; soft takeover everywhere, reset on every layer / mode / edit-slot / Shift change. Full list: `docs/HARDWARE_MAP.md`. Firmware version prints at boot and on Shift + B16 long press. **USB MIDI is disabled** (USB carries serial logging); DIN MIDI works.
 
-## The plan: layers + punch-in fx (agreed 2026-11-11; details settle step by step)
-- **Layers** chosen with the 3-way toggle `hw.tog_sw18`: up = layer 1 (looper + beat repeat), middle = layer 2 (punch-in fx), down = layer 3 (tbd). 2-way toggle `hw.tog_sw17` = edit / perf mode of the last-triggered fx.
-- **Layer 2 sits AFTER the Quantized loop buffer** (post input and post loop; not recorded into the loop). Trigger = hold, Shift + button = latch (like the stutter). Triggers quantised.
-- **One insert engine runs at a time** (last triggered, 5 ms crossfade between); two buses (reverb, delay) run only while a send is up or the tail rings. Shared stage on every fx: K5 out gain +-12 dB, K6 wet/dry, K7 hipass 2-pole no res, K8 lopass 2-pole no res; K1-K4 = per-fx params (edit mode). Shift+K1 sends the insert to the reverb bus, Shift+K2 to the delay bus.
-- **Fx slots** (one per button on B1-B7 and B9-B16, B8 = Shift; no banks; looper buttons live on layer 1 only): see the button map below. Resonant hipass sweep: K1 freq, K2 res, K3 LFO depth, K4 ramp LFO speed 2 bars..1/32, LFO locked to the bar or to the trigger. Pitch up must be tight; reverse plays recent audio backwards from the quantised position (no pitch). Later: stacked inserts and snapshots.
-- **Controls are per layer** (decided 2026-11-11): each layer has its own knob map, normal and Shift. Layer 1 keeps today's map (K2 loop length; Shift+K1 input gain, Shift+K2 output level, Shift+K3 input offset). Layer 2 = the fx controls above (its own Shift layer: sends on Shift+K1/K2). Soft takeover resets on every layer change. Input gain / output level are only reachable on layer 1 (MIDI CC 20/22 always work).
-- **Layer 2 button map (agreed):** B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion+prefilter, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop (tight gate).
-- **Build order:** 0.9.0 fork+strip (done) -> 0.10.0 fx framework + shared stage + toggles + bit crusher (done) -> 0.11.0 flash save (done: Seed QSPI via `PersistentStorage`, written from the main loop, only if changed) -> 0.12.0 reverb bus (done, LGPL on) -> delay bus (send field already in `SlotSettings`) -> simple inserts -> modulation fx -> pitch / freq shifter (shimmer = reverb K4) -> stacking.
-- **SDRAM objects** (`DSY_SDRAM_BSS`) must have NO constructor (no `= value` defaults on members, no ctor): it would run at power-up before SDRAM is on and FREEZE the Seed (0.12.0 bug). They are not zeroed: set every member in `Init()`. Check: `static_assert(std::is_trivially_default_constructible<...>)`. Fast RAM (DTCM, 128 KB) is 68% full; big buffers go to SDRAM.
-- Layer = one header with `Init`, `Process(block)`, `GetStatus`; `main.cpp` only chains them. Fx engines go in `src/engine/fx/` as plain C++ with Mac tests.
+## The plan: punch-in fx on layer 2 (design details: `docs/DESIGN_FX.md`, read it before touching `src/engine/fx/`)
+- **Layer 2 button map (agreed):** B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion+prefilter, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop (tight gate). Hold = on, Shift + button = latch, quantised to 1/16. Per slot: K1-K4 own params, K5 gain +-12 dB, K6 wet/dry (return level on bus fx), K7 hipass, K8 lopass; Shift+K1 / Shift+K2 = reverb / delay send.
+- **Build order:** 0.9 fork+strip, 0.10 fx framework + bit crusher, 0.11 flash save, 0.12 reverb bus (all done) -> **NEXT: delay bus (B2)** (proposal in DESIGN_FX.md, agree the questions first) -> simple inserts (res lowpass, distortion, tremolo chop) -> modulation fx (flanger, jet, phaser, comb) -> pitch / freq shifter / reverse (shimmer = reverb K4) -> stacking + snapshots.
+- **SDRAM objects** (`DSY_SDRAM_BSS`) must have NO constructor and no `= value` member defaults: it runs at power-up before SDRAM is on and FREEZES the Seed (0.12.0 bug). Set every member in `Init()`; guard with `static_assert(std::is_trivially_default_constructible<...>)`.
+- Layer = one header with `Init`, `Process(block)`, `GetStatus`; `main.cpp` only chains them. Fx engines: plain C++ in `src/engine/fx/` with Mac tests.
 
 ## Golden rule: no guessing
 Only use libDaisy / DaisySP APIs that exist on this machine. **Read the header before using any function** and cite it. Locations (relative to this folder):
@@ -73,7 +68,7 @@ If something is not found there, say so instead of inventing it.
 | `src/engine/beat_repeat.h` | Beat repeat: history ring, stored slices, 1/16 quantising, crossfades |
 | `src/engine/quantized_loop_buffer.h` | The B1/B2 looper state machine, loop reader, crossfades |
 | `src/engine/pitch_fx.h` | `PitchFx`: exact pitch-down by whole semitones, keeps length |
-| `src/engine/fx/` | Layer 2: `fx_layer.h`, `fx_common.h` (HP/LP/gain/wet), `fx_engine.h`, `fx_bitcrush.h` |
+| `src/engine/fx/` | Layer 2: `fx_layer.h`, `fx_common.h` (HP/LP/gain/wet), `fx_engine.h`, `fx_bitcrush.h`, `fx_reverb_bus.h`, `fx_flanger_core.h` |
 | `src/engine/spsc_queue.h`, `looper_config.h` | Lock-free queue; fixed numbers (4/4, bars, min BPM, buffer sizes, pitch limits) |
 | `src/modules/gain_stage.h` | Input gain, soft clip, output level, ceiling |
 | `src/userinterface.h`, `src/ui_glue.h` | Template UI event/LED code (rarely edit) |

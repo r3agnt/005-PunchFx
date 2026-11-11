@@ -31,3 +31,9 @@ Planned map: B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 fre
 - Button presses no longer light their LED.
 
 Defaults at power-up: loop length 4 bars, input gain 0 dB, output at ceiling, no loop.
+
+
+## Layer 2 reverb/bit crusher bullets before the 0.12.8 cleanup
+- **Reverb (B1, 0.12.0) is a BUS**: while B1 is on, the layer input goes into DaisySP `ReverbSc`; It is a SEND (0.12.3): the dry signal is never changed; K6 = `Return level` of the reverb; on release the input just stops and the TAIL rings out, then the reverb switches itself off (tail under -80 dB for 0.3 s). Fixed +8 dB make-up gain on the return. Knobs: K1 Time (tail length 0.4-12 s in even steps, 0.12.6), K2 Tone (damping 800 Hz-18 kHz, default 4686 Hz), K3 Pre-delay 0-100 ms (default 0), fixed input diffusion (4 allpass per side, ~19 ms, 0.12.7: smooths the bright slapback-like first echoes), K4 unassigned (shimmer comes with the pitch shifter), K5 gain lifts dry + return, K7 hipass filters the return, **K8 lopass filters the reverb INPUT** (0.12.8; the dry and the return are not lowpassed). Defaults: wet 40%.
+- **Sends (0.12.0):** in edit mode **Shift + K1** = how much of the edit fx's output goes into the reverb (`Send reverb`, 0-100%, saved per fx; not on the reverb itself). The reverb then runs while that fx is on, with the reverb slot's settings and wet level as its return. Shift + K2 (delay send) comes with the delay.
+- Bit crusher (B7, 0.10.3): the input is summed to mono, then pre lopass -> noise -> bit depth -> sample rate, then the shared stage. K1 pre lopass 200 Hz-20 kHz (top = off), K2 noise 0-100% (scaled to the quantiser step, so it grows as the depth drops), K3 bit depth 12..1 bits (curved: most travel below 8 bits), K4 sample rate 48 kHz..188 Hz (equal octave steps); then a fixed mild stereo flanger (0.25 Hz, 1-2 ms sweep, mix 0.4, feedback 0.3, highs rolled off at 7 kHz) smooths it and widens it again.

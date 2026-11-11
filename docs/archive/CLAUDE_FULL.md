@@ -126,3 +126,23 @@ Looper-specific (details in `docs/DESIGN_LOOPER.md`):
 
 ## Design decision bullet (cut 2026-11-11)
 - **Beat repeat stutters the input history only; the loop records the beat-repeat output.** Crossfades end on the quantise line. MIDI clock arrives via `StartReceiveRt` into a queue, stamped per audio block (~1 ms). No delay on the live input; an input offset on beat-repeat slice reads handles audio-vs-clock misalignment.
+
+
+## Current state + plan sections before the 0.12.8 rewrite (2026-11-11)
+## Current state (v0.12.1: reverb built, NOT yet flashed; 0.12.0 froze at boot, fixed; 0.11.0 and earlier tested OK)
+Layers: 3-way toggle (up/middle/down = 1/2/3), 2-way toggle = edit/perf. **Layer 1** = MIDI clock/transport follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars); beat repeat on B9-B16 (quantised to 1/16, latch on Shift+B9-B16); B6 pitch-down on the beat repeat. Slice mode removed (idea kept in `docs/IDEAS.md`). **Layer 2 (0.10.0)** = punch-in fx framework (`src/engine/fx/`: `fx_layer.h` buttons/latch/quantise/crossfade, `fx_common.h` shared stage, `fx_engine.h` interface, `fx_bitcrush.h`); B1 reverb (bus: `fx_reverb_bus.h`, ReverbSc, sends via Shift+K1) and B7 bit crusher exist, the other 13 slots log "not built yet". Settings are saved to flash (0.11.0).
+Signal chain: input gain -> beat repeat -> pitch fx -> looper -> SoftClip -> output level, ceiling 0.9 (`docs/ARCHITECTURE.md`).
+Controls: tables in `src/params.h` (`kPotMap`, `kCcMap`); B8 = SHIFT; soft takeover on knobs. Full list in `docs/HARDWARE_MAP.md`.
+Firmware version prints on serial at boot and on Shift + B16 long press. **USB MIDI is disabled** (USB carries serial logging); DIN MIDI works.
+
+## The plan: layers + punch-in fx (agreed 2026-11-11; details settle step by step)
+- **Layers** chosen with the 3-way toggle `hw.tog_sw18`: up = layer 1 (looper + beat repeat), middle = layer 2 (punch-in fx), down = layer 3 (tbd). 2-way toggle `hw.tog_sw17` = edit / perf mode of the last-triggered fx.
+- **Layer 2 sits AFTER the Quantized loop buffer** (post input and post loop; not recorded into the loop). Trigger = hold, Shift + button = latch (like the stutter). Triggers quantised.
+- **One insert engine runs at a time** (last triggered, 5 ms crossfade between); two buses (reverb, delay) run only while a send is up or the tail rings. Shared stage on every fx: K5 out gain +-12 dB, K6 wet/dry, K7 hipass 2-pole no res, K8 lopass 2-pole no res; K1-K4 = per-fx params (edit mode). Shift+K1 sends the insert to the reverb bus, Shift+K2 to the delay bus.
+- **Fx slots** (one per button on B1-B7 and B9-B16, B8 = Shift; no banks; looper buttons live on layer 1 only): see the button map below. Resonant hipass sweep: K1 freq, K2 res, K3 LFO depth, K4 ramp LFO speed 2 bars..1/32, LFO locked to the bar or to the trigger. Pitch up must be tight; reverse plays recent audio backwards from the quantised position (no pitch). Later: stacked inserts and snapshots.
+- **Controls are per layer** (decided 2026-11-11): each layer has its own knob map, normal and Shift. Layer 1 keeps today's map (K2 loop length; Shift+K1 input gain, Shift+K2 output level, Shift+K3 input offset). Layer 2 = the fx controls above (its own Shift layer: sends on Shift+K1/K2). Soft takeover resets on every layer change. Input gain / output level are only reachable on layer 1 (MIDI CC 20/22 always work).
+- **Layer 2 button map (agreed):** B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion+prefilter, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop (tight gate).
+- **Build order:** 0.9.0 fork+strip (done) -> 0.10.0 fx framework + shared stage + toggles + bit crusher (done) -> 0.11.0 flash save (done: Seed QSPI via `PersistentStorage`, written from the main loop, only if changed) -> 0.12.0 reverb bus (done, LGPL on) -> delay bus (send field already in `SlotSettings`) -> simple inserts -> modulation fx -> pitch / freq shifter (shimmer = reverb K4) -> stacking.
+- **SDRAM objects** (`DSY_SDRAM_BSS`) must have NO constructor (no `= value` defaults on members, no ctor): it would run at power-up before SDRAM is on and FREEZE the Seed (0.12.0 bug). They are not zeroed: set every member in `Init()`. Check: `static_assert(std::is_trivially_default_constructible<...>)`. Fast RAM (DTCM, 128 KB) is 68% full; big buffers go to SDRAM.
+- Layer = one header with `Init`, `Process(block)`, `GetStatus`; `main.cpp` only chains them. Fx engines go in `src/engine/fx/` as plain C++ with Mac tests.
+
