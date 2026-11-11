@@ -11,7 +11,7 @@
 
 struct SavedState
 {
-    static constexpr uint32_t kMagic = 0x50465801; // 'P' 'F' 'X' + layout version 1
+    static constexpr uint32_t kMagic = 0x50465802; // 'P' 'F' 'X' + layout version 2 (v1 had no send values)
 
     uint32_t         magic;
     float            input_offset; // the Params values, 0.0 - 1.0 (see params.h)
@@ -39,5 +39,5 @@ struct SavedState
         return true;
     }
 };
-static_assert(sizeof(SavedState) == sizeof(uint32_t) + 4 * sizeof(float) + fx::kNumSlots * fx::kNumKnobs * sizeof(float),
+static_assert(sizeof(SavedState) == sizeof(uint32_t) + 4 * sizeof(float) + fx::kNumSlots * fx::kNumValues * sizeof(float),
               "SavedState must have no padding");

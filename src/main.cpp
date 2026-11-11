@@ -36,6 +36,8 @@
 #include "engine/fx/fx_layer.h"
 #include "engine/fx/fx_bitcrush.h"
 #include "engine/saved_state.h"
+#include "engine/fx/fx_reverb_bus.h"
+#include "modules/reverb_core.h"
 #include "util/PersistentStorage.h"
 
 using namespace daisy;
@@ -94,6 +96,11 @@ volatile bool         fx_edit_mode           = false;
 fx::Layer        fx_layer;
 fx::SlotSettings fx_settings[fx::kNumSlots];
 static fx::BitCrush fx_bitcrush; // slot 6 = button 7
+/** The reverb (slot 0 = button 1): a bus. ReverbSc itself is big (395 KB), so it lives in SDRAM too. */
+DSY_SDRAM_BSS static daisysp::ReverbSc sc_reverb;
+static ScReverbCore  reverb_core;
+DSY_SDRAM_BSS static fx::ReverbBus reverb_bus; // pre-delay memory (131 KB) is too big for the fast RAM
+static fx::ReverbSlot fx_reverb_slot;
 
 /** SAVING (0.11.0): the fx settings and the four layer 1 settings are kept in the Seed's flash
  *  memory (QSPI) with libDaisy's PersistentStorage. It is written when the 2-way switch goes
@@ -576,6 +583,10 @@ int main(void)
     for(auto &s : fx_settings)
         s = fx::DefaultSettings();
     fx_layer.Init(hw.seed.AudioSampleRate(), fx_settings);
+    reverb_core.Attach(&sc_reverb);
+    reverb_bus.Init(hw.seed.AudioSampleRate(), &reverb_core);
+    fx_layer.SetReverbBus(&reverb_bus, 0);
+    fx_layer.SetEngine(0, &fx_reverb_slot); // button 1
     fx_layer.SetEngine(6, &fx_bitcrush); // button 7; the other slots come in later versions
     beat_repeat.Init(hist_buf_l, hist_buf_r, looper::kHistoryCapacityFrames,
                      frz_buf_l, frz_buf_r, looper::kFreezeCapacityFrames,

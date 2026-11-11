@@ -12,10 +12,14 @@ constexpr int kNumSlots = 15; // layer 2 buttons: B1-B7 = slots 0-6, B9-B16 = sl
  *  knobs 5-8 (index 4-7) = the same for every fx: output gain, wet/dry, hipass, lopass. */
 constexpr int kNumKnobs = 8;
 constexpr int kGain = 4, kWet = 5, kHp = 6, kLp = 7;
+/** Plus two "send" amounts per slot (set with Shift + K1 / Shift + K2 in edit mode): how much of
+ *  this fx's output goes into the reverb bus / the delay bus (0 = none). */
+constexpr int kNumValues = 10;
+constexpr int kSendReverb = 8, kSendDelay = 9;
 
 struct SlotSettings
 {
-    float v[kNumKnobs];
+    float v[kNumValues];
 };
 
 /** Neutral starting values: own params in the middle, 0 dB gain, 100% wet, filters off. */
@@ -28,6 +32,8 @@ inline SlotSettings DefaultSettings()
     s.v[kWet]  = 1.0f;
     s.v[kHp]   = 0.0f;
     s.v[kLp]   = 1.0f;
+    s.v[kSendReverb] = 0.0f;
+    s.v[kSendDelay]  = 0.0f;
     return s;
 }
 
@@ -36,6 +42,8 @@ class Engine
 {
   public:
     virtual ~Engine() {}
+    /** true = a BUS fx (reverb, delay): the layer feeds the input into a shared bus instead of calling Process. */
+    virtual bool        IsBus() const { return false; }
     virtual void        Init(float sample_rate)  = 0;
     /** Forget old audio (called each time the fx starts). */
     virtual void        Reset()                  = 0;

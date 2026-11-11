@@ -14,4 +14,5 @@ Full old checklists (004-Looper): `docs/archive/HARDWARE_TEST_FULL.md` (not load
 
 ## Template for the next version
 Version tested: ______   Date: ______
+- [ ] 0.12.0 reverb: first boot logs `FX settings: defaults` (old saved layout is ignored); B1 hold = reverb (K6 wet/dry, K1 time, K2 tone, K3 pre-delay), release = dry back + tail rings out; Shift + B1 latches; B1 LED glows while the tail rings; no clicks on start/stop, no buzz; Shift + K1 on B7 sends the bit crusher into the reverb; CPU line with the reverb running (avg / max): ______ ; B1 on layer 1 still the looper.
 - [ ] (add one checkbox per new feature, then fold into "Passed" when done)

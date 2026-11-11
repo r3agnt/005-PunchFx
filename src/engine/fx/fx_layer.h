@@ -10,6 +10,11 @@
 //    latch) takes over.
 //  - Only ONE fx runs at a time. Switching fades from the old to the new over 5 ms.
 //  - The last button pressed is the "edit slot": the fx whose knobs you are editing.
+//  - BUS fx (the reverb on B1): while its button is on, the layer input is sent into the reverb;
+//    the wet/dry knob crossfades the dry signal against the reverb. When you let go the dry
+//    comes back at once and the tail rings out. Any other fx can also feed the reverb with its
+//    send amount (Shift + K1 in edit mode). The reverb's return goes through that slot's
+//    gain / hipass / lopass.
 //  - If the layer is not selected (buttons_active = false) button presses are ignored, but a
 //    latched fx keeps running.
 #include <cstddef>
@@ -17,6 +22,7 @@
 #include <cmath>
 #include "fx_engine.h"
 #include "fx_common.h"
+#include "fx_reverb_bus.h"
 
 namespace fx {
 
@@ -57,6 +63,7 @@ struct Status
     int8_t pending = -1; // fx waiting for its 1/16 line
     int8_t latch   = -1;
     int8_t edit    = -1; // the fx the knobs edit
+    bool   reverb_ringing = false; // the reverb bus is running (fed, or its tail is still audible)
 };
 
 class Layer
@@ -71,6 +78,16 @@ class Layer
         xf_pos_   = xf_len_;
         for(int s = 0; s < kNumSlots; s++)
             stages_[s].Init(sample_rate);
+        bus_stage_.Init(sample_rate);
+        for(size_t i = 0; i < kMaxChunk; i++)
+            zero_[i] = 0.0f;
+    }
+
+    /** Plug in the reverb bus; `slot` = the slot that controls it (its settings = time/tone/pre-delay/wet...). */
+    void SetReverbBus(ReverbBus* bus, int slot)
+    {
+        reverb_bus_ = bus;
+        bus_slot_   = slot;
     }
 
     /** Plug an effect into a slot (before Init of the engine is fine; it is initialised here). */
@@ -97,6 +114,7 @@ class Layer
         s.pending = static_cast<int8_t>(pending_start_ >= 0 ? pending_start_ : (want_ != cur_ ? want_ : -1));
         s.latch   = static_cast<int8_t>(latch_);
         s.edit    = static_cast<int8_t>(edit_);
+        s.reverb_ringing = reverb_bus_ && reverb_bus_->Running();
         return s;
     }
 
@@ -126,6 +144,21 @@ class Layer
         {
             SwitchNow();
             Segment(in_l, in_r, out_l, out_r, a, n - a);
+        }
+
+        // The reverb bus: runs while something feeds it, and until its tail has died away.
+        if(reverb_bus_ && bus_slot_ >= 0 && engines_[bus_slot_])
+        {
+            const bool feeding = FeedsBus(cur_) || (xf_pos_ < xf_len_ && FeedsBus(prev_));
+            float      ret_l[kMaxChunk], ret_r[kMaxChunk], bl[kMaxChunk], br[kMaxChunk];
+            reverb_bus_->Process(feed_l_, feed_r_, ret_l, ret_r, n, settings_[bus_slot_], feeding);
+            // the return: wet level, hipass, lopass, gain (the reverb slot's knobs 5-8)
+            bus_stage_.Process(zero_, zero_, ret_l, ret_r, bl, br, n, settings_[bus_slot_]);
+            for(size_t i = 0; i < n; i++)
+            {
+                out_l[i] += bl[i];
+                out_r[i] += br[i];
+            }
         }
     }
 
@@ -236,50 +269,86 @@ class Layer
             Emit(EventType::Off, prev_);
     }
 
-    /** What one slot makes of the input (slot < 0 = the input itself). */
-    void SlotOut(int slot, const float* in_l, const float* in_r, float* out_l, float* out_r, size_t off, size_t len)
+    /** Does this slot send audio into the reverb bus? (the reverb slot itself, or an fx with a send above 0) */
+    bool FeedsBus(int slot) const
+    {
+        if(slot < 0 || !engines_[slot])
+            return false;
+        return engines_[slot]->IsBus() || settings_[slot].v[kSendReverb] > 0.001f;
+    }
+
+    /** What one slot makes of the input (slot < 0 = the input itself), and what it sends to the reverb bus
+     *  (feed): the reverb slot sends its whole input and lets the dry through at (1 - wet); other fx send
+     *  their output times their send amount. */
+    void SlotOut(int slot, const float* in_l, const float* in_r, float* out_l, float* out_r,
+                 float* feed_l, float* feed_r, size_t off, size_t len)
     {
         if(slot < 0 || !engines_[slot])
         {
             for(size_t i = 0; i < len; i++)
             {
-                out_l[i] = in_l[off + i];
-                out_r[i] = in_r[off + i];
+                out_l[i]  = in_l[off + i];
+                out_r[i]  = in_r[off + i];
+                feed_l[i] = feed_r[i] = 0.0f;
             }
+            return;
+        }
+        if(engines_[slot]->IsBus())
+        {
+            const float w = settings_[slot].v[kWet];
+            for(size_t i = 0; i < len; i++)
+            {
+                const float wi = bus_last_wet_ + (w - bus_last_wet_) * static_cast<float>(i + 1) / static_cast<float>(len);
+                out_l[i]       = in_l[off + i] * (1.0f - wi);
+                out_r[i]       = in_r[off + i] * (1.0f - wi);
+                feed_l[i]      = in_l[off + i];
+                feed_r[i]      = in_r[off + i];
+            }
+            bus_last_wet_ = w;
             return;
         }
         float fl[kMaxChunk], fr[kMaxChunk];
         engines_[slot]->Process(in_l + off, in_r + off, fl, fr, len, settings_[slot].v);
         stages_[slot].Process(in_l + off, in_r + off, fl, fr, out_l, out_r, len, settings_[slot]);
+        const float send = reverb_bus_ ? settings_[slot].v[kSendReverb] : 0.0f;
+        for(size_t i = 0; i < len; i++)
+        {
+            feed_l[i] = out_l[i] * send;
+            feed_r[i] = out_r[i] * send;
+        }
     }
 
-    /** Process in[off .. off+len) into out[off ..], fading old -> new fx if a switch is under way. */
+    /** Process in[off .. off+len) into out[off ..] (and feed_l_/feed_r_), fading old -> new fx if a switch is under way. */
     void Segment(const float* in_l, const float* in_r, float* out_l, float* out_r, size_t off, size_t len)
     {
         if(len == 0)
             return;
-        float al[kMaxChunk], ar[kMaxChunk];
+        float al[kMaxChunk], ar[kMaxChunk], afl[kMaxChunk], afr[kMaxChunk];
         if(xf_pos_ >= xf_len_)
         {
             prev_ = -1;
-            SlotOut(cur_, in_l, in_r, al, ar, off, len);
+            SlotOut(cur_, in_l, in_r, al, ar, afl, afr, off, len);
             for(size_t i = 0; i < len; i++)
             {
-                out_l[off + i] = al[i];
-                out_r[off + i] = ar[i];
+                out_l[off + i]  = al[i];
+                out_r[off + i]  = ar[i];
+                feed_l_[off + i] = afl[i];
+                feed_r_[off + i] = afr[i];
             }
             return;
         }
-        float bl[kMaxChunk], br[kMaxChunk];
-        SlotOut(prev_, in_l, in_r, al, ar, off, len);
-        SlotOut(cur_, in_l, in_r, bl, br, off, len);
+        float bl[kMaxChunk], br[kMaxChunk], bfl[kMaxChunk], bfr[kMaxChunk];
+        SlotOut(prev_, in_l, in_r, al, ar, afl, afr, off, len);
+        SlotOut(cur_, in_l, in_r, bl, br, bfl, bfr, off, len);
         for(size_t i = 0; i < len; i++)
         {
             float t = static_cast<float>(xf_pos_ + i + 1) / static_cast<float>(xf_len_);
             if(t > 1.0f)
                 t = 1.0f;
-            out_l[off + i] = al[i] * (1.0f - t) + bl[i] * t;
-            out_r[off + i] = ar[i] * (1.0f - t) + br[i] * t;
+            out_l[off + i]   = al[i] * (1.0f - t) + bl[i] * t;
+            out_r[off + i]   = ar[i] * (1.0f - t) + br[i] * t;
+            feed_l_[off + i] = afl[i] * (1.0f - t) + bfl[i] * t;
+            feed_r_[off + i] = afr[i] * (1.0f - t) + bfr[i] * t;
         }
         xf_pos_ += len;
     }
@@ -288,6 +357,14 @@ class Layer
     SlotSettings* settings_ = nullptr;
     Engine*       engines_[kNumSlots] = {};
     Stage         stages_[kNumSlots];
+
+    // reverb bus
+    ReverbBus* reverb_bus_ = nullptr;
+    int        bus_slot_   = -1;
+    Stage      bus_stage_;                // gain / hipass / lopass / wet level of the reverb return
+    float      bus_last_wet_ = 0.0f;
+    float      feed_l_[kMaxChunk], feed_r_[kMaxChunk]; // what is sent into the reverb this block
+    float      zero_[kMaxChunk];
 
     uint16_t prev_raw_ = 0, blocked_ = 0;
     int      last_pressed_ = -1, want_ = -1, latch_ = -1, edit_ = -1, pending_start_ = -1;

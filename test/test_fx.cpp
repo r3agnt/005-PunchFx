@@ -9,6 +9,7 @@
 #include "../src/engine/fx/fx_common.h"
 #include "../src/engine/fx/fx_bitcrush.h"
 #include "../src/engine/fx/fx_layer.h"
+#include "../src/engine/fx/fx_reverb_bus.h"
 
 static int g_checks = 0, g_fails = 0;
 #define CHECK(cond, ...)                               \
@@ -425,6 +426,199 @@ static void TestNoClicks()
     CHECK(worst < normal * 1.6f, "biggest step %.4f vs %.4f for the plain sine", worst, normal);
 }
 
+/** A simple stand-in reverb for the Mac tests: one echo (100 ms) that feeds back by the "time" setting.
+ *  out = 0.5 * in + echo. With feedback below 1 the tail dies away. */
+struct EchoCore : public fx::ReverbCore
+{
+    static const size_t kLen = 4800;
+    float               bl[kLen] = {}, br[kLen] = {};
+    size_t              pos = 0;
+    float               fb  = 0.5f;
+    void  Init(float) override {}
+    void  SetFeedback(float f) override { fb = f; }
+    void  SetToneHz(float) override {}
+    void  Process(float il, float ir, float* ol, float* orr) override
+    {
+        const float el = bl[pos], er = br[pos];
+        bl[pos] = il + fb * el;
+        br[pos] = ir + fb * er;
+        pos     = (pos + 1) % kLen;
+        *ol     = 0.5f * il + el;
+        *orr    = 0.5f * ir + er;
+    }
+};
+
+static void TestReverbBus()
+{
+    std::printf("reverb bus\n");
+    {
+        // pre-delay: an impulse comes out of the reverb only after the pre-delay
+        static EchoCore core;
+        static fx::ReverbBus bus;
+        bus.Init(kSr, &core);
+        fx::SlotSettings s = fx::DefaultSettings();
+        s.v[0] = 0.0f; // time
+        s.v[2] = 0.5f; // pre-delay 100 ms = 4800 samples
+        std::vector<float> in(9600, 0.0f), zl(9600), zr(9600);
+        in[0] = 1.0f;
+        for(int pass = 0; pass < 200; pass++) // let the pre-delay glide settle (it glides per block)
+        {
+            float a[kBlock] = {}, b[kBlock], c[kBlock];
+            bus.Process(a, a, b, c, kBlock, s, true);
+        }
+        // flush: fresh bus state is not needed; measure the delay of the impulse
+        float impulse_at = -1;
+        for(size_t t = 0; t < 9600; t += kBlock)
+        {
+            float l[kBlock], r[kBlock];
+            bus.Process(&in[t], &in[t], l, r, kBlock, s, true);
+            for(size_t i = 0; i < kBlock; i++)
+                if(impulse_at < 0 && std::fabs(l[i]) > 0.2f)
+                    impulse_at = static_cast<float>(t + i);
+        }
+        CHECK(std::fabs(impulse_at - 4800.0f) < 3.0f, "pre-delay 100 ms: impulse arrives at sample %.0f", impulse_at);
+    }
+    {
+        // the bus switches itself off after the tail has died, and is silent while off
+        static EchoCore core;
+        static fx::ReverbBus bus;
+        bus.Init(kSr, &core);
+        fx::SlotSettings s = fx::DefaultSettings();
+        s.v[0] = 0.0f; // fast decay (feedback 0.5)
+        s.v[2] = 0.0f;
+        const auto in = Sine(440, 4800);
+        for(size_t t = 0; t + kBlock <= 4800; t += kBlock)
+        {
+            float l[kBlock], r[kBlock];
+            bus.Process(&in[t], &in[t], l, r, kBlock, s, true);
+        }
+        CHECK(bus.Running(), "bus runs while fed");
+        std::vector<float> tail;
+        const float        zero[kBlock] = {};
+        for(size_t t = 0; t < 48000 * 4; t += kBlock)
+        {
+            float l[kBlock], r[kBlock];
+            bus.Process(zero, zero, l, r, kBlock, s, false);
+            if(t < 4800)
+                for(size_t i = 0; i < kBlock; i++)
+                    tail.push_back(l[i]);
+        }
+        CHECK(Rms(tail, 0, tail.size()) > 0.05f, "the tail keeps ringing after the input stops");
+        CHECK(!bus.Running(), "the bus switches itself off once the tail has died");
+        float l[kBlock], r[kBlock];
+        bus.Process(zero, zero, l, r, kBlock, s, false);
+        float m = 0;
+        for(float x : l)
+            m = std::max(m, std::fabs(x));
+        CHECK(m == 0.0f, "output is exactly silent while the bus is off");
+    }
+}
+
+/** A Rig with the reverb on slot 0 (bus) and a stand-in core. Input = 0.4 s of sine, then silence. */
+struct BusRig
+{
+    EchoCore         core;
+    fx::ReverbBus    bus;
+    fx::ReverbSlot   slot;
+    fx::Layer        layer;
+    fx::SlotSettings settings[fx::kNumSlots];
+    Scale            half{0.5f};
+    fx::BlockInfo    info;
+    std::vector<float> in, out;
+    size_t           t = 0;
+    BusRig()
+    {
+        for(auto& s : settings)
+            s = fx::DefaultSettings();
+        layer.Init(kSr, settings);
+        bus.Init(kSr, &core);
+        layer.SetReverbBus(&bus, 0);
+        layer.SetEngine(0, &slot);
+        layer.SetEngine(1, &half);
+        info.running        = false;
+        info.buttons_active = true;
+        in                  = Sine(440, 48000 * 6);
+        for(size_t i = 19200; i < in.size(); i++)
+            in[i] = 0.0f;
+        settings[0].v[0] = 0.0f; // fast decay
+        settings[0].v[2] = 0.0f; // no pre-delay
+    }
+    void Blocks(size_t count)
+    {
+        for(size_t b = 0; b < count; b++)
+        {
+            float l[kBlock], r[kBlock];
+            layer.Process(info, &in[t], &in[t], l, r, kBlock);
+            for(size_t i = 0; i < kBlock; i++)
+                out.push_back(l[i]);
+            t += kBlock;
+        }
+    }
+};
+
+static void TestReverbLayer()
+{
+    std::printf("reverb in the layer (slot B1 + sends)\n");
+    {
+        BusRig r; // nothing pressed: untouched and the bus stays off
+        r.Blocks(100);
+        bool same = true;
+        for(size_t i = 0; i < r.out.size(); i++)
+            if(r.out[i] != r.in[i])
+                same = false;
+        CHECK(same && !r.layer.GetStatus().reverb_ringing, "no fx on: output equals input exactly and the reverb is off");
+    }
+    {
+        BusRig r; // hold B1 with wet = 0: only the dry signal
+        r.settings[0].v[fx::kWet] = 0.0f;
+        r.info.raw_mask = 1u << 0;
+        r.Blocks(200);
+        float err = 0;
+        for(size_t i = 4800; i < r.out.size(); i++)
+            err = std::max(err, std::fabs(r.out[i] - r.in[i]));
+        CHECK(err < 1e-4f, "reverb slot with wet 0%%: dry only (error %g)", err);
+    }
+    {
+        BusRig r; // hold B1 with wet = 100%: dry is gone, reverb only (echo arrives after 100 ms)
+        r.settings[0].v[fx::kWet] = 1.0f;
+        r.info.raw_mask = 1u << 0;
+        r.Blocks(100); // 100 ms: the first 100 ms contain only the stand-in's direct 0.5*in part
+        const float with_wet = Rms(r.out, 2400, 4800) / Rms(r.in, 2400, 4800);
+        CHECK(std::fabs(with_wet - 0.5f) < 0.06f, "wet 100%%: the dry signal is replaced by the reverb (x%.2f)", with_wet);
+    }
+    {
+        BusRig r; // hold, then release: dry returns, the tail keeps ringing, then the bus turns itself off
+        r.settings[0].v[fx::kWet] = 0.5f;
+        r.info.raw_mask = 1u << 0;
+        r.Blocks(300); // 0.3 s
+        CHECK(r.layer.GetStatus().reverb_ringing, "reverb running while held");
+        r.info.raw_mask = 0;
+        r.Blocks(450);  // input ends at 0.4 s; we are at ~0.75 s
+        CHECK(Rms(r.out, 24000 - 4800, 24000) > 0.01f, "tail rings after the input stopped and the button was released");
+        r.Blocks(3000);
+        CHECK(!r.layer.GetStatus().reverb_ringing, "reverb switched itself off later");
+        float peak = 0;
+        for(float x : r.out)
+            peak = std::max(peak, std::fabs(x));
+        CHECK(peak < 1.5f, "stays bounded (peak %.2f)", peak);
+    }
+    {
+        BusRig r; // an fx with a send: B2 (halves) with send 1.0 feeds the reverb; send 0 does not
+        r.info.raw_mask = 1u << 1;
+        r.Blocks(300);
+        CHECK(!r.layer.GetStatus().reverb_ringing, "send 0: the reverb stays off");
+        BusRig q;
+        q.settings[1].v[fx::kSendReverb] = 1.0f;
+        q.settings[0].v[fx::kWet]        = 0.5f;
+        q.info.raw_mask = 1u << 1;
+        q.Blocks(300);
+        CHECK(q.layer.GetStatus().reverb_ringing, "send 1: the reverb runs");
+        // the insert's own output (half) plus the reverb: louder than half alone once the echo returns
+        const float rms_send = Rms(q.out, 9600, 14400), rms_dry = Rms(r.out, 9600, 14400);
+        CHECK(rms_send > rms_dry * 1.1f, "the send adds reverb on top of the fx output (%.3f vs %.3f)", rms_send, rms_dry);
+    }
+}
+
 int main()
 {
     TestStage();
@@ -432,6 +626,8 @@ int main()
     TestQuantisedStartStop();
     TestLatchAndLayer();
     TestNoClicks();
+    TestReverbBus();
+    TestReverbLayer();
     std::printf("\n%d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

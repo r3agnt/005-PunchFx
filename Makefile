@@ -19,7 +19,7 @@ LIBDAISY_DIR = ../../DaisyExamples/libDaisy
 # (optional) Add DaisySP
 DAISYSP_DIR = ../../DaisyExamples/DaisySP
 
-# USE_DAISYSP_LGPL=1
+USE_DAISYSP_LGPL=1
 
 # (optional) Includes FatFS source files within project.
 USE_FATFS = 1

@@ -218,8 +218,17 @@ class MainPage : public daisy::UiPage
         const int         slot = fx_layer.GetStatus().edit;
         const fx::Engine *eng  = fx_layer.EngineFor(slot);
         const char       *name = nullptr;
-        if(!shift_ && eng && potID < fx::kNumKnobs)
-            name = potID < 4 ? eng->KnobName(potID) : kSharedNames[potID - 4];
+        int               value_index = potID; // which of the slot's values this knob edits
+        if(eng && potID < fx::kNumKnobs)
+        {
+            if(!shift_)
+                name = potID < 4 ? eng->KnobName(potID) : kSharedNames[potID - 4];
+            else if(potID == 0 && !eng->IsBus())
+            {
+                name        = "Send reverb"; // Shift + K1: how much of this fx goes into the reverb
+                value_index = fx::kSendReverb;
+            }
+        }
         if(!eng || name == nullptr)
         {
             line.Append(eng ? "(unassigned) - " : "(no fx selected) - ");
@@ -229,14 +238,14 @@ class MainPage : public daisy::UiPage
         }
         line.Append(name);
         line.Append(" - ");
-        AppendFxValue(line, potID, eng, pos);
+        AppendFxValue(line, value_index, eng, pos);
 
         if(!fx_edit_mode)
             line.Append(" (perf mode: locked)");
         else
         {
-            float &value = fx_settings[slot].v[potID];
-            auto  &t     = takeover_fx_[potID];
+            float &value = fx_settings[slot].v[value_index];
+            auto  &t     = takeover_fx_[value_index];
             if(t.Update(pos, value))
             {
                 value = pos;
@@ -256,6 +265,11 @@ class MainPage : public daisy::UiPage
         {
             line.AppendFloat(eng->KnobReal(knob, v), 1);
             line.Append(eng->KnobUnit(knob));
+        }
+        else if(knob == fx::kSendReverb)
+        {
+            line.AppendInt(static_cast<int>(v * 100.0f + 0.5f));
+            line.Append("%");
         }
         else if(knob == fx::kGain)
         {
@@ -310,6 +324,8 @@ class MainPage : public daisy::UiPage
                 led[btn(fs.edit)] = kLedEdit;
             if(fs.latch >= 0)
                 led[btn(fs.latch)] = kLedStutterLatched;
+            if(fs.reverb_ringing && led[0] < kLedStutterLatched)
+                led[0] = kLedStutterLatched; // B1 LED glows while the reverb is on or its tail rings
             if(fs.active >= 0)
                 led[btn(fs.active)] = kLedFull;
             if(fs.pending >= 0)
@@ -454,7 +470,7 @@ class MainPage : public daisy::UiPage
     uint32_t     loop_show_until_ = 0;
     bool         shift_ = false;
     SoftTakeover takeover_[2][daisy::desktop_devkit::kNumPots];
-    SoftTakeover takeover_fx_[fx::kNumKnobs];
+    SoftTakeover takeover_fx_[fx::kNumValues];
     uint8_t      last_layer_     = 0;
     bool         last_edit_mode_ = false;
     int          last_edit_slot_ = -1;
