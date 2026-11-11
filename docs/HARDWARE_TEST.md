@@ -11,6 +11,7 @@ Inherited from 004-Looper v0.8.1 (tested 2026-11-11): clock/transport, quantized
 
 ## Template for the next version
 Version tested: ______   Date: ______
+- [ ] 0.10.3: bit crusher is mono (a hard-panned input comes out in the middle/both sides), the mild flanger smooths it without sounding like an obvious flanger; CPU line OK.
 - [ ] 0.10.1: filters sound right with wet/dry < 100%; no thump when an fx starts with hipass up; bit crusher K1 pre lopass, K2 noise, K3 depth (audible across most of the knob), K4 sample rate.
 - [ ] 0.10.0 layers: 3-way toggle up/middle/down logs `Layer 1/2/3`; on layers 2 and 3 B1/B2 and B9-B16 do NOT run the looper/beat repeat; layer 1 works as before.
 - [ ] 0.10.0 edit/perf: 2-way toggle logs `Edit mode` / `Perf mode` (if backwards, flip `kEditWhenSwitchPressed` in `main.cpp`).

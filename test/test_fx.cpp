@@ -129,6 +129,7 @@ static void TestBitCrush()
     std::printf("bit crusher\n");
     fx::BitCrush bc;
     bc.Init(kSr);
+    bc.smooth_flanger = false; // check the crush maths on their own first
     const auto in = Sine(300, 4800);
     const size_t N = 4800;
     std::vector<float> o(N), r(N);
@@ -199,6 +200,53 @@ static void TestBitCrush()
     bc.Process(lo.data(), lo.data(), o.data(), r.data(), N, knobs);
     const float r_lo = Rms(o, 480, N) / Rms(lo, 480, N);
     CHECK(r_hi < 0.2f && std::fabs(r_lo - 1.0f) < 0.03f, "pre lopass cuts 5 kHz (%.3f) and passes 100 Hz (%.3f)", r_hi, r_lo);
+
+    // mono + flanger
+    fx::BitCrush mono;
+    mono.Init(kSr);
+    mono.smooth_flanger = false;
+    float k2[4] = {1.0f, 0.0f, 0.0f, 0.0f}; // clean: 12 bits, full rate
+    std::vector<float> zero(N, 0.0f), ol(N), orr(N);
+    mono.Process(in.data(), zero.data(), ol.data(), orr.data(), N, k2);
+    float diff = 0;
+    for(size_t i = 0; i < N; i++)
+        diff = std::max(diff, std::fabs(ol[i] - orr[i]));
+    CHECK(diff == 0.0f && Rms(ol, 480, N) > 0.1f, "the crusher is mono: a left-only input comes out equally on both sides");
+
+    fx::BitCrush sm;
+    sm.Init(kSr);
+    const auto loud = Sine(300, 48000);
+    std::vector<float> fl(48000), fr(48000);
+    sm.Process(loud.data(), loud.data(), fl.data(), fr.data(), 48000, k2);
+    // the two sides move differently (stereo width), but neither is far from the other in level
+    float width = 0;
+    for(size_t i = 4800; i < 48000; i++)
+        width = std::max(width, std::fabs(fl[i] - fr[i]));
+    CHECK(width > 0.02f, "left and right differ a little (width %.3f)", width);
+    // stable on noise: no blow-up with the feedback
+    std::vector<float> nz(48000);
+    unsigned           seed = 12345;
+    for(auto& x : nz)
+    {
+        seed = seed * 1664525u + 1013904223u;
+        x    = (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f) * 0.9f;
+    }
+    sm.Reset();
+    sm.Process(nz.data(), nz.data(), fl.data(), fr.data(), 48000, k2);
+    const float level = Rms(fl, 4800, 48000) / Rms(nz, 4800, 48000);
+    CHECK(level > 0.7f && level < 1.3f, "mild flanger keeps the level about the same on noise (x%.2f)", level);
+    float peak = 0;
+    for(float x : fl)
+        peak = std::max(peak, std::fabs(x));
+    CHECK(peak < 1.6f, "flanger stays stable on noise (peak %.2f)", peak);
+    // smooth sweep: no clicks (biggest sample step of a 300 Hz sine stays close to the plain sine's)
+    sm.Reset();
+    sm.Process(loud.data(), loud.data(), fl.data(), fr.data(), 48000, k2);
+    float step_max = 0;
+    for(size_t i = 4801; i < 48000; i++)
+        step_max = std::max(step_max, std::fabs(fl[i] - fl[i - 1]));
+    const float plain = static_cast<float>(2 * kPi * 300 / kSr * 0.5);
+    CHECK(step_max < plain * 1.6f, "flanger sweep makes no clicks (step %.4f vs %.4f)", step_max, plain);
 }
 
 /** Drives a Layer in blocks of 48 with a fake clock. Output goes to `out`. */
