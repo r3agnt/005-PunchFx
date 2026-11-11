@@ -9,6 +9,7 @@
 #include "engine/clock_tracker.h"
 #include "engine/quantized_loop_buffer.h"
 #include "engine/looper_config.h"
+#include "engine/fx/fx_layer.h"
 
 /** The MIDI clock follower, created in main.cpp. Read here for the LEDs. */
 extern ClockTracker clock_tracker;
@@ -18,6 +19,13 @@ extern QuantizedLoopBuffer quantized_loop;
 extern BeatRepeat beat_repeat;
 extern volatile int8_t stutter_latch;
 extern SpscQueue<LoopCmd, 16> loop_cmd_queue;
+
+/** Layers and punch-in fx, created in main.cpp. current_layer: 0 = layer 1 (looper),
+ *  1 = layer 2 (fx), 2 = layer 3. fx_edit_mode: true = knobs edit the last-triggered fx. */
+extern volatile uint8_t current_layer;
+extern volatile bool    fx_edit_mode;
+extern fx::Layer        fx_layer;
+extern fx::SlotSettings fx_settings[fx::kNumSlots];
 
 /** MainPage : the one and only UI page.
  *
@@ -49,14 +57,27 @@ class MainPage : public daisy::UiPage
         // Shift = button 8 held. Read it here (not from button events) so it
         // can never get stuck after a long press.
         const bool shift = hw->button[7].Pressed();
+        // Knobs must pick up again after: Shift changes, another layer, edit <-> perf,
+        // or another fx being edited (its saved values are not where the knobs are).
+        const int edit_slot = fx_layer.GetStatus().edit;
+        const bool changed = shift != shift_ || current_layer != last_layer_
+                             || fx_edit_mode != last_edit_mode_ || edit_slot != last_edit_slot_;
+        if(changed)
+        {
+            for(auto &layer : takeover_)
+                for(auto &t : layer)
+                    t.Reset();
+            for(auto &t : takeover_fx_)
+                t.Reset();
+        }
         if(shift != shift_)
         {
             shift_ = shift;
-            for(auto &layer : takeover_)
-                for(auto &t : layer)
-                    t.Reset(); // knobs must pick up again on the new layer
             Log::PrintLine(shift_ ? "Shift on" : "Shift off");
         }
+        last_layer_     = current_layer;
+        last_edit_mode_ = fx_edit_mode;
+        last_edit_slot_ = edit_slot;
 
         // Seed LED: slow flash = loop armed, solid = recording, otherwise
         // a fast blink as a "program is running" sign.
@@ -90,7 +111,8 @@ class MainPage : public daisy::UiPage
         // Button 8 = SHIFT (handled in Draw()).
         // Button 1 = record arm (Shift + B1 = clear). Button 2 = loop <-> live.
         // These only send a command; the audio callback does the work.
-        if(numberOfPresses == 1)
+        // (B1/B2 are looper buttons on layer 1 only; on layer 2 they are fx buttons.)
+        if(numberOfPresses == 1 && current_layer == 0)
         {
             if(buttonID == 0)
                 loop_cmd_queue.Push(shift_ ? LoopCmd::Clear : LoopCmd::ArmToggle);
@@ -110,6 +132,15 @@ class MainPage : public daisy::UiPage
     /** potID is 0-based. newPosition is 0.0 to 1.0. */
     bool OnPotMoved(uint16_t potID, float newPosition) override
     {
+        // Layer 2: the knobs edit the fx (separate code below). Layer 3: nothing yet.
+        if(current_layer == 1)
+            return HandleFxKnob(potID, newPosition);
+        if(current_layer == 2)
+        {
+            Log::PrintLine("K%d (layer 3 unassigned) - %d%%", potID + 1, static_cast<int>(newPosition * 100.0f + 0.5f));
+            return false;
+        }
+
         // Find which parameter this knob controls (normal or shift layer).
         float Params::*target = nullptr;
         if(potID < daisy::desktop_devkit::kNumPots)
@@ -171,6 +202,126 @@ class MainPage : public daisy::UiPage
     void OnShow() override { Log::PrintLine("Page Opened!"); }
 
   private:
+    /** Layer 2 knobs. K1-K4 = the edit slot's own params, K5-K8 = gain, wet/dry, hipass, lopass.
+     *  Only in EDIT mode (perf mode locks them). Soft takeover as everywhere: after selecting
+     *  another fx a knob does nothing until it reaches that fx's stored value. */
+    bool HandleFxKnob(uint16_t potID, float pos)
+    {
+        static const char *const kSharedNames[4] = {"Out gain", "Wet/dry", "Hipass", "Lopass"};
+        daisy::FixedCapStr<64>   line;
+        if(shift_)
+            line.Append("Shift + ");
+        line.Append("K");
+        line.AppendInt(potID + 1);
+        line.Append(" ");
+
+        const int         slot = fx_layer.GetStatus().edit;
+        const fx::Engine *eng  = fx_layer.EngineFor(slot);
+        const char       *name = nullptr;
+        if(!shift_ && eng && potID < fx::kNumKnobs)
+            name = potID < 4 ? eng->KnobName(potID) : kSharedNames[potID - 4];
+        if(!eng || name == nullptr)
+        {
+            line.Append(eng ? "(unassigned) - " : "(no fx selected) - ");
+            line.AppendFloat(pos, 3);
+            Log::PrintLine("%s", line.Cstr());
+            return false;
+        }
+        line.Append(name);
+        line.Append(" - ");
+        AppendFxValue(line, potID, eng, pos);
+
+        if(!fx_edit_mode)
+            line.Append(" (perf mode: locked)");
+        else
+        {
+            float &value = fx_settings[slot].v[potID];
+            auto  &t     = takeover_fx_[potID];
+            if(t.Update(pos, value))
+            {
+                value = pos;
+                t.Written(pos);
+            }
+            else
+                line.Append(" (pickup)");
+        }
+        Log::PrintLine("%s", line.Cstr());
+        return false;
+    }
+
+    /** Value of an fx knob in real units, for the log. */
+    static void AppendFxValue(daisy::FixedCapStr<64> &line, int knob, const fx::Engine *eng, float v)
+    {
+        if(knob < 4)
+        {
+            line.AppendFloat(eng->KnobReal(knob, v), 1);
+            line.Append(eng->KnobUnit(knob));
+        }
+        else if(knob == fx::kGain)
+        {
+            const float db = fx::GainDb(v);
+            line.Append(db >= 0.0f ? "+" : "");
+            line.AppendFloat(db, 1);
+            line.Append(" dB");
+        }
+        else if(knob == fx::kWet)
+        {
+            line.AppendInt(static_cast<int>(v * 100.0f + 0.5f));
+            line.Append("%");
+        }
+        else if(knob == fx::kHp)
+        {
+            if(fx::HpOn(v))
+            {
+                line.AppendInt(static_cast<int>(fx::HpHz(v) + 0.5f));
+                line.Append(" Hz");
+            }
+            else
+                line.Append("off");
+        }
+        else
+        {
+            if(fx::LpOn(v))
+            {
+                line.AppendInt(static_cast<int>(fx::LpHz(v) + 0.5f));
+                line.Append(" Hz");
+            }
+            else
+                line.Append("off");
+        }
+    }
+
+    /** LEDs on layers 2 and 3. Layer 2: each fx button's LED is dim if that fx exists, brighter
+     *  for the one being edited (edit mode), brighter again if latched, full while it is ON,
+     *  flashing while it waits for its 1/16 line. LED 8 (Shift) = edit mode (glow) / perf (dim).
+     *  Layer 3: LED 8 flashes slowly (nothing built yet). */
+    void DrawFxLeds(daisy::desktop_devkit::Hardware *hw, uint32_t now_ms)
+    {
+        float      led[daisy::desktop_devkit::kNumLeds] = {};
+        const bool fast = (now_ms & 255) < 128;
+        if(current_layer == 1)
+        {
+            const fx::Status fs = fx_layer.GetStatus();
+            auto             btn = [](int slot) { return slot < 7 ? slot : slot + 1; };
+            for(int slot = 0; slot < fx::kNumSlots; slot++)
+                if(fx_layer.EngineFor(slot))
+                    led[btn(slot)] = kLedCycleDim;
+            if(fs.edit >= 0 && fx_edit_mode)
+                led[btn(fs.edit)] = kLedEdit;
+            if(fs.latch >= 0)
+                led[btn(fs.latch)] = kLedStutterLatched;
+            if(fs.active >= 0)
+                led[btn(fs.active)] = kLedFull;
+            if(fs.pending >= 0)
+                led[btn(fs.pending)] = fast ? kLedFull : 0.0f;
+            led[7] = fx_edit_mode ? kLedEdit : kLedCycleDim;
+        }
+        else
+            led[7] = (now_ms & 1023) < 512 ? kLedFull : kLedCycleDim;
+        for(size_t i = 0; i < daisy::desktop_devkit::kNumLeds; i++)
+            hw->SetLed(i, led[i]);
+    }
+
     /** LED layout (LED n is next to button n):
      *   Top row (LEDs 1-8): one LED per bar of the loop cycle (dim). The bar
      *     we are in is bright.
@@ -188,6 +339,11 @@ class MainPage : public daisy::UiPage
      *  row glows very dimly. */
     void DrawLeds(daisy::desktop_devkit::Hardware *hw, uint32_t now_ms)
     {
+        if(current_layer != 0)
+        {
+            DrawFxLeds(hw, now_ms);
+            return;
+        }
         const ClockStatus st   = clock_tracker.GetStatus();
         const LoopStatus  ls   = quantized_loop.GetStatus();
         const uint32_t    bars = ls.bars > 0 ? ls.bars : 1;
@@ -287,6 +443,7 @@ class MainPage : public daisy::UiPage
      *  0.08 = 21%, 0.10 = 26%, 0.25 = 55%, 0.5 = 86%, 1.0 = 100%. */
     static constexpr float kLedCycleDim = 0.02f; // top row: LEDs of the loop cycle
     static constexpr float kLedFull     = 1.0f;  // active bar, flashes, eighth-note
+    static constexpr float kLedEdit     = 0.25f; // layer 2: the fx being edited (about 55%)
     static constexpr float kLedStutterHeld    = kLedCycleDim; // button LED while its stutter repeats (button held): same as the loop-length LEDs
     static constexpr float kLedStutterLatched = 0.15f;        // ... while it is latched on with Shift + button (brighter, about 37%)
 
@@ -297,4 +454,8 @@ class MainPage : public daisy::UiPage
     uint32_t     loop_show_until_ = 0;
     bool         shift_ = false;
     SoftTakeover takeover_[2][daisy::desktop_devkit::kNumPots];
+    SoftTakeover takeover_fx_[fx::kNumKnobs];
+    uint8_t      last_layer_     = 0;
+    bool         last_edit_mode_ = false;
+    int          last_edit_slot_ = -1;
 };

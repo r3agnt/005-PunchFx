@@ -33,6 +33,8 @@
 #include "engine/quantized_loop_buffer.h"
 #include "engine/looper_config.h"
 #include "engine/pitch_fx.h"
+#include "engine/fx/fx_layer.h"
+#include "engine/fx/fx_bitcrush.h"
 
 using namespace daisy;
 using namespace daisy::desktop_devkit;
@@ -76,6 +78,20 @@ DSY_SDRAM_BSS static float hist_buf_l[looper::kHistoryCapacityFrames];
 DSY_SDRAM_BSS static float hist_buf_r[looper::kHistoryCapacityFrames];
 DSY_SDRAM_BSS static float frz_buf_l[looper::kFreezeCapacityFrames];
 DSY_SDRAM_BSS static float frz_buf_r[looper::kFreezeCapacityFrames];
+
+/** LAYERS (3-way switch): 0 = layer 1 (looper + beat repeat), 1 = layer 2 (punch-in fx),
+ *  2 = layer 3 (not built yet). Written by the audio callback, read by the UI. */
+volatile uint8_t current_layer = 0;
+/** 2-way switch: true = EDIT mode (knobs change the last-triggered fx), false = PERF mode
+ *  (knobs locked). If the switch works the wrong way round, flip this one constant. */
+static constexpr bool kEditWhenSwitchPressed = true;
+volatile bool         fx_edit_mode           = false;
+
+/** Layer 2: the punch-in fx (src/engine/fx/). fx_settings = the knob values of every fx
+ *  (the UI edits them in edit mode, the audio reads them). */
+fx::Layer        fx_layer;
+fx::SlotSettings fx_settings[fx::kNumSlots];
+static fx::BitCrush fx_bitcrush; // slot 6 = button 7
 
 /** Button commands (B1, B2) waiting for the audio callback. */
 SpscQueue<LoopCmd, 16> loop_cmd_queue;
@@ -253,8 +269,46 @@ static void LogBeatEvents()
     }
 }
 
+/** Turn the punch-in fx events into log lines. Called every audio block. */
+static void LogFxEvents()
+{
+    fx::Event e;
+    while(fx_layer.PopEvent(e))
+    {
+        FixedCapStr<32> s;
+        const int       button = e.slot < 7 ? e.slot + 1 : e.slot + 2; // slots 0-6 = B1-B7, 7-14 = B9-B16
+        switch(e.type)
+        {
+            case fx::EventType::On:
+                s.Append("FX B");
+                s.AppendInt(button);
+                s.Append(" ");
+                s.Append(fx::SlotName(e.slot));
+                s.Append(" ON");
+                break;
+            case fx::EventType::Off: s.Append("FX OFF"); break;
+            case fx::EventType::LatchOn:
+                s.Append("FX latch ");
+                s.Append(fx::SlotName(e.slot));
+                break;
+            case fx::EventType::LatchOff: s.Append("FX latch OFF"); break;
+            case fx::EventType::Edit:
+                s.Append("FX edit: ");
+                s.Append(fx::SlotName(e.slot));
+                break;
+            case fx::EventType::NotBuilt:
+                s.Append("FX B");
+                s.AppendInt(button);
+                s.Append(" not built yet");
+                break;
+        }
+        Say(s);
+    }
+}
+
 /** Largest block the looper is given at once (libDaisy's default is 48). */
 static constexpr size_t kMaxChunk = 128;
+static_assert(kMaxChunk == fx::kMaxChunk, "the fx layer handles the same block size");
 
 /** CPU load meter (libDaisy util/CpuLoadMeter.h): times each audio block with the chip's cycle
  *  counter (a couple of cycles per block, so it adds no real load). The main loop prints
@@ -275,6 +329,26 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // Read all knobs/buttons/switches and create UI events from them.
     hw.UpdateAllControls();
     ui.GenerateEvents();
+
+    // The two toggle switches: 3-way = layer (up = 1, middle = 2, down = 3), 2-way = edit / perf.
+    uint8_t layer;
+    {
+        const int pos = hw.tog_sw18.Read();
+        layer = pos == daisy::Switch3::POS_UP ? 0 : (pos == daisy::Switch3::POS_DOWN ? 2 : 1);
+        const bool edit = hw.tog_sw17.Pressed() == kEditWhenSwitchPressed;
+        if(layer != current_layer)
+        {
+            current_layer = layer;
+            FixedCapStr<32> s("Layer ");
+            s.AppendInt(layer + 1);
+            Say(s);
+        }
+        if(edit != fx_edit_mode)
+        {
+            fx_edit_mode = edit;
+            Say(FixedCapStr<32>(edit ? "Edit mode" : "Perf mode"));
+        }
+    }
 
     // Take the MIDI clock messages that arrived, advance the song position
     // by one block, and queue any log lines.
@@ -320,6 +394,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         for(size_t i = 0; i < looper::kNumDivisions; i++)
             if(hw.button[8 + i].Pressed())
                 raw |= 1u << i;
+        if(layer != 0)
+            raw = 0; // the beat repeat belongs to layer 1 only
         const uint32_t newly = raw & ~prev_raw;
         if(hw.button[7].Pressed())
         {
@@ -345,12 +421,12 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         }
         shift_blocked &= raw; // forget buttons that were released
         prev_raw = raw;
-        if(!st.running)
+        if(!st.running || layer != 0)
             stutter_latch = -1;
         // B6 = pitch-down effect (hold). Like the stutter buttons, a B6 that is
         // pressed while Shift is held does nothing until it is released.
         static bool prev_b6 = false, b6_blocked = false;
-        const bool  b6      = hw.button[5].Pressed();
+        const bool  b6      = layer == 0 && hw.button[5].Pressed();
         if(b6 && !prev_b6 && hw.button[7].Pressed())
             b6_blocked = true;
         if(!b6)
@@ -361,11 +437,21 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         if(stutter_latch >= 0)
             beat_info.held_mask |= 1u << stutter_latch;
     }
+    // Layer 2: which of its 15 buttons are down (B1-B7 = slots 0-6, B9-B16 = slots 7-14).
+    fx::BlockInfo fx_info;
+    fx_info.running         = st.running;
+    fx_info.samples_per_bar = beat_info.samples_per_bar;
+    fx_info.shift           = hw.button[7].Pressed();
+    fx_info.buttons_active  = layer == 1;
+    for(int slot = 0; slot < fx::kNumSlots; slot++)
+        if(hw.button[slot < 7 ? slot : slot + 1].Pressed())
+            fx_info.raw_mask |= static_cast<uint16_t>(1u << slot);
+
     // Pass the latest settings to the effects.
     gain_stage.SetControls(params.input_gain, params.out_level);
 
     // SIGNAL CHAIN (left = channel 0, right = channel 1):
-    //   input gain -> beat repeat -> pitch fx -> Quantized loop buffer -> soft clip + output level + ceiling
+    //   input gain -> beat repeat -> pitch fx -> Quantized loop buffer -> punch-in fx (layer 2) -> soft clip + output level + ceiling
     size_t done = 0;
     while(done < size)
     {
@@ -373,6 +459,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         float        perf_l[kMaxChunk], perf_r[kMaxChunk];
         float        rep_l[kMaxChunk], rep_r[kMaxChunk];
         float        loop_l[kMaxChunk], loop_r[kMaxChunk];
+        float        fx_l[kMaxChunk], fx_r[kMaxChunk];
         for(size_t i = 0; i < n; i++)
         {
             perf_l[i] = gain_stage.Gain(in[0][done + i]);
@@ -383,19 +470,24 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         pitch_fx.Process(rep_l, rep_r, n, beat_repeat.RepeatIndex(),
                          beat_repeat.PitchOn() && beat_repeat.Repeating(),
                          beat_repeat.JumpStartIndex());
+        const float chunk_pos = beat_info.pos_in_bar;
         beat_info.pos_in_bar += static_cast<float>(n);
         quantized_loop.Process(info, rep_l, rep_r, loop_l, loop_r, n);
         info.bar_start = false; // the bar boundary belongs to the first chunk only
+        // Layer 2 punch-in fx (after the looper). Passes the signal through when no fx is on.
+        fx_info.pos_in_bar = chunk_pos;
+        fx_layer.Process(fx_info, loop_l, loop_r, fx_l, fx_r, n);
         for(size_t i = 0; i < n; i++)
         {
-            out[0][done + i] = gain_stage.Limit(loop_l[i]);
-            out[1][done + i] = gain_stage.Limit(loop_r[i]);
+            out[0][done + i] = gain_stage.Limit(fx_l[i]);
+            out[1][done + i] = gain_stage.Limit(fx_r[i]);
         }
         done += n;
     }
 
     LogLoopEvents();
     LogBeatEvents();
+    LogFxEvents();
     cpu_meter.OnBlockEnd();
 }
 
@@ -442,6 +534,10 @@ int main(void)
     clock_tracker.Init(hw.seed.AudioSampleRate());
     quantized_loop.Init(loop_buf_l, loop_buf_r, looper::kLoopCapacityFrames, hw.seed.AudioSampleRate());
     pitch_fx.Init(hw.seed.AudioSampleRate());
+    for(auto &s : fx_settings)
+        s = fx::DefaultSettings();
+    fx_layer.Init(hw.seed.AudioSampleRate(), fx_settings);
+    fx_layer.SetEngine(6, &fx_bitcrush); // button 7; the other slots come in later versions
     beat_repeat.Init(hist_buf_l, hist_buf_r, looper::kHistoryCapacityFrames,
                      frz_buf_l, frz_buf_r, looper::kFreezeCapacityFrames,
                      hw.seed.AudioSampleRate());

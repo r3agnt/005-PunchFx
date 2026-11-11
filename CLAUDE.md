@@ -38,8 +38,8 @@ Also: once a feature is tested on hardware, fold its checklist into "Passed" in 
 - You cannot flash or hear the hardware: say clearly what is built-but-untested and tell me what to check.
 - Keep sessions short: one task per session, commit when it works (see `docs/WORKFLOW.md`).
 
-## Current state (v0.9.0, built, NOT yet flashed)
-Layer 1 only: MIDI clock/transport follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars); beat repeat on B9-B16 (quantised to 1/16, latch on Shift+B9-B16); B6 pitch-down on the beat repeat. Slice mode removed (idea kept in `docs/IDEAS.md`).
+## Current state (v0.10.0, built, NOT yet flashed; 0.9.0 not flashed either)
+Layers: 3-way toggle (up/middle/down = 1/2/3), 2-way toggle = edit/perf. **Layer 1** = MIDI clock/transport follower; Quantized loop buffer (B1 arm/record, B2 loop/live, Shift+B1 clear, K2 length 1/2/4/8 bars); beat repeat on B9-B16 (quantised to 1/16, latch on Shift+B9-B16); B6 pitch-down on the beat repeat. Slice mode removed (idea kept in `docs/IDEAS.md`). **Layer 2 (0.10.0)** = punch-in fx framework (`src/engine/fx/`: `fx_layer.h` buttons/latch/quantise/crossfade, `fx_common.h` shared stage, `fx_engine.h` interface, `fx_bitcrush.h`); only B7 bit crusher exists, the other 14 slots log "not built yet". Settings not saved yet.
 Signal chain: input gain -> beat repeat -> pitch fx -> looper -> SoftClip -> output level, ceiling 0.9 (`docs/ARCHITECTURE.md`).
 Controls: tables in `src/params.h` (`kPotMap`, `kCcMap`); B8 = SHIFT; soft takeover on knobs. Full list in `docs/HARDWARE_MAP.md`.
 Firmware version prints on serial at boot and on Shift + B16 long press. **USB MIDI is disabled** (USB carries serial logging); DIN MIDI works.
@@ -51,7 +51,7 @@ Firmware version prints on serial at boot and on Shift + B16 long press. **USB M
 - **Planned fx** (layer 2: one fx per button on B1-B7 and B9-B16 = 15 slots, B8 = Shift; no banks; the looper buttons live on layer 1 only): reverb (+shimmer), delay, resonant hipass sweep (K1 freq, K2 res, K3 LFO depth, K4 ramp LFO speed 2 bars..1/32, LFO locked to the bar or to the trigger), bit crusher, jet flanger, flanger, phaser, comb, resonant lowpass, distortion with prefilter, freq shifter, pitch up/down (up must be tight), **tremolo chop / tight gate** (B16), **reverse** (plays recent audio backwards from the quantised position, no pitch). Later: stacked inserts and snapshots.
 - **Controls are per layer** (decided 2026-11-11): each layer has its own knob map, normal and Shift. Layer 1 keeps today's map (K2 loop length; Shift+K1 input gain, Shift+K2 output level, Shift+K3 input offset). Layer 2 = the fx controls above (its own Shift layer: sends on Shift+K1/K2). Soft takeover resets on every layer change. Input gain / output level are only reachable on layer 1 (MIDI CC 20/22 always work).
 - **Layer 2 button map (agreed):** B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion+prefilter, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop (tight gate).
-- **Build order:** 0.9.0 fork+strip (done) -> fx framework + shared stage + toggles + bit crusher -> simple inserts -> modulation fx -> buses (enable `USE_DAISYSP_LGPL` for ReverbSc) -> pitch / freq shifter -> stacking.
+- **Build order:** 0.9.0 fork+strip (done) -> 0.10.0 fx framework + shared stage + toggles + bit crusher (done) -> flash save of all fx on edit->perf (planned: Seed QSPI flash via `PersistentStorage`, only if changed, written from the main loop) -> simple inserts -> modulation fx -> buses (enable `USE_DAISYSP_LGPL` for ReverbSc) -> pitch / freq shifter -> stacking.
 - Layer = one header with `Init`, `Process(block)`, `GetStatus`; `main.cpp` only chains them. Fx engines go in `src/engine/fx/` as plain C++ with Mac tests.
 
 ## Golden rule: no guessing
@@ -71,6 +71,7 @@ If something is not found there, say so instead of inventing it.
 | `src/engine/beat_repeat.h` | Beat repeat: history ring, stored slices, 1/16 quantising, crossfades |
 | `src/engine/quantized_loop_buffer.h` | The B1/B2 looper state machine, loop reader, crossfades |
 | `src/engine/pitch_fx.h` | `PitchFx`: exact pitch-down by whole semitones, keeps length |
+| `src/engine/fx/` | Layer 2: `fx_layer.h`, `fx_common.h` (HP/LP/gain/wet), `fx_engine.h`, `fx_bitcrush.h` |
 | `src/engine/spsc_queue.h`, `looper_config.h` | Lock-free queue; fixed numbers (4/4, bars, min BPM, buffer sizes, pitch limits) |
 | `src/modules/gain_stage.h` | Input gain, soft clip, output level, ceiling |
 | `src/userinterface.h`, `src/ui_glue.h` | Template UI event/LED code (rarely edit) |

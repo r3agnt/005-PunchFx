@@ -6,11 +6,12 @@ CXX      ?= c++
 CXXFLAGS ?= -std=c++14 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined
 HEADERS   = $(wildcard ../src/engine/*.h)
 
-all: build/test_clock build/test_quantized_loop_buffer build/test_beat build/test_pitch
+all: build/test_clock build/test_quantized_loop_buffer build/test_beat build/test_pitch build/test_fx
 	./build/test_clock
 	./build/test_quantized_loop_buffer
 	./build/test_beat
 	./build/test_pitch
+	./build/test_fx
 
 build/test_clock: test_clock.cpp $(HEADERS)
 	mkdir -p build
@@ -34,3 +35,7 @@ clean:
 build/test_pitch: test_pitch.cpp $(HEADERS)
 	mkdir -p build
 	$(CXX) $(CXXFLAGS) test_pitch.cpp -o build/test_pitch
+
+build/test_fx: test_fx.cpp $(HEADERS) $(wildcard ../src/engine/fx/*.h)
+	mkdir -p build
+	$(CXX) $(CXXFLAGS) test_fx.cpp -o build/test_fx

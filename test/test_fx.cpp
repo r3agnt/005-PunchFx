@@ -1,0 +1,335 @@
+// Host-side test for layer 2 (src/engine/fx/): shared stage, bit crusher, button/latch/quantise logic,
+// crossfades. Run with `make -C test`.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <vector>
+#include "../src/engine/fx/fx_engine.h"
+#include "../src/engine/fx/fx_common.h"
+#include "../src/engine/fx/fx_bitcrush.h"
+#include "../src/engine/fx/fx_layer.h"
+
+static int g_checks = 0, g_fails = 0;
+#define CHECK(cond, ...)                               \
+    do                                                 \
+    {                                                  \
+        g_checks++;                                    \
+        if(!(cond))                                    \
+        {                                              \
+            g_fails++;                                 \
+            std::printf("  FAIL line %d: ", __LINE__); \
+            std::printf(__VA_ARGS__);                  \
+            std::printf("\n");                         \
+        }                                              \
+    } while(0)
+
+static const float  kSr = 48000.0f;
+static const double kPi = 3.14159265358979323846;
+static const size_t kBlock = 48;
+
+/** A test fx: output = input * factor (0 = silence). Lets us see exactly when an fx is on. */
+struct Scale : public fx::Engine
+{
+    float factor;
+    explicit Scale(float f) : factor(f) {}
+    void        Init(float) override {}
+    void        Reset() override {}
+    void        Process(const float* il, const float* ir, float* ol, float* orr, size_t n, const float*) override
+    {
+        for(size_t i = 0; i < n; i++)
+            ol[i] = il[i] * factor, orr[i] = ir[i] * factor;
+    }
+    const char* KnobName(int) const override { return nullptr; }
+    float       KnobReal(int, float v) const override { return v; }
+    const char* KnobUnit(int) const override { return ""; }
+};
+
+static float Rms(const std::vector<float>& v, size_t a, size_t b)
+{
+    double s = 0;
+    for(size_t i = a; i < b; i++)
+        s += static_cast<double>(v[i]) * v[i];
+    return static_cast<float>(std::sqrt(s / static_cast<double>(b - a)));
+}
+
+static std::vector<float> Sine(double f, size_t n, double amp = 0.5)
+{
+    std::vector<float> v(n);
+    for(size_t i = 0; i < n; i++)
+        v[i] = static_cast<float>(amp * std::sin(2.0 * kPi * f * static_cast<double>(i) / kSr));
+    return v;
+}
+
+static std::vector<float> RunStage(fx::SlotSettings s, const std::vector<float>& in, const std::vector<float>& fxsig)
+{
+    fx::Stage st;
+    st.Init(kSr);
+    std::vector<float> out(in.size());
+    for(size_t t = 0; t + kBlock <= in.size(); t += kBlock)
+    {
+        float l[kBlock];
+        st.Process(&in[t], &in[t], &fxsig[t], &fxsig[t], l, l, kBlock, s);
+        for(size_t i = 0; i < kBlock; i++)
+            out[t + i] = l[i];
+    }
+    return out;
+}
+
+static void TestStage()
+{
+    std::printf("shared stage\n");
+    const auto in = Sine(1000, 48000);
+    fx::SlotSettings s = fx::DefaultSettings();
+    auto o = RunStage(s, in, in);
+    CHECK(std::fabs(Rms(o, 4800, 48000) / Rms(in, 4800, 48000) - 1.0f) < 0.001f, "defaults pass the fx through unchanged");
+
+    s.v[fx::kGain] = 1.0f;
+    o = RunStage(s, in, in);
+    CHECK(std::fabs(20 * std::log10(Rms(o, 4800, 48000) / Rms(in, 4800, 48000)) - 8.0f) < 0.05f, "gain knob full = +8 dB");
+    s.v[fx::kGain] = 0.0f;
+    o = RunStage(s, in, in);
+    CHECK(std::fabs(20 * std::log10(Rms(o, 4800, 48000) / Rms(in, 4800, 48000)) + 8.0f) < 0.05f, "gain knob zero = -8 dB");
+
+    s = fx::DefaultSettings();
+    s.v[fx::kWet] = 0.0f;
+    std::vector<float> silent(in.size(), 0.0f);
+    o = RunStage(s, in, silent);
+    CHECK(std::fabs(Rms(o, 4800, 48000) / Rms(in, 4800, 48000) - 1.0f) < 0.001f, "wet 0%% = only the dry signal");
+    s.v[fx::kWet] = 0.5f;
+    o = RunStage(s, in, silent);
+    CHECK(std::fabs(Rms(o, 4800, 48000) / Rms(in, 4800, 48000) - 0.5f) < 0.001f, "wet 50%% of silence + dry = half the dry");
+
+    // Hipass: knob 0.6 = 20*100^0.6 = 317 Hz. 100 Hz must drop a lot, 5 kHz must pass.
+    s = fx::DefaultSettings();
+    s.v[fx::kHp] = 0.6f;
+    auto lo = Sine(100, 48000), hi = Sine(5000, 48000);
+    CHECK(Rms(RunStage(s, lo, lo), 4800, 48000) < 0.2f * Rms(lo, 4800, 48000), "hipass cuts 100 Hz");
+    CHECK(std::fabs(Rms(RunStage(s, hi, hi), 4800, 48000) / Rms(hi, 4800, 48000) - 1.0f) < 0.02f, "hipass passes 5 kHz");
+    // Lopass: knob 0.4 = 200*100^0.4 = 1264 Hz.
+    s = fx::DefaultSettings();
+    s.v[fx::kLp] = 0.4f;
+    CHECK(Rms(RunStage(s, hi, hi), 4800, 48000) < 0.2f * Rms(hi, 4800, 48000), "lopass cuts 5 kHz");
+    CHECK(std::fabs(Rms(RunStage(s, lo, lo), 4800, 48000) / Rms(lo, 4800, 48000) - 1.0f) < 0.02f, "lopass passes 100 Hz");
+}
+
+static void TestBitCrush()
+{
+    std::printf("bit crusher\n");
+    fx::BitCrush bc;
+    bc.Init(kSr);
+    const auto in = Sine(300, 480);
+    std::vector<float> o(480), r(480);
+    float knobs[4] = {1.0f, 0.0f, 0, 0}; // 2 bits, no sample hold
+    bc.Process(in.data(), in.data(), o.data(), r.data(), 480, knobs);
+    // 2 bits: step = 2/4 = 0.5, so every output is a multiple of 0.5
+    bool on_grid = true;
+    for(float x : o)
+        if(std::fabs(x / 0.5f - std::round(x / 0.5f)) > 1e-4f)
+            on_grid = false;
+    CHECK(on_grid, "2-bit output only takes steps of 0.5");
+
+    knobs[0] = 0.0f; // 16 bits
+    bc.Process(in.data(), in.data(), o.data(), r.data(), 480, knobs);
+    float worst = 0;
+    for(size_t i = 0; i < 480; i++)
+        worst = std::max(worst, std::fabs(o[i] - in[i]));
+    CHECK(worst < 0.0001f, "16 bits is nearly transparent (error %g)", worst);
+
+    knobs[0] = 0.0f;
+    knobs[1] = 1.0f; // hold 32
+    bc.Reset();
+    bc.Process(in.data(), in.data(), o.data(), r.data(), 480, knobs);
+    bool held = true;
+    for(size_t i = 0; i < 480; i++)
+        if(o[i] != o[(i / 32) * 32])
+            held = false;
+    CHECK(held, "sample hold 32 repeats each value for 32 samples");
+}
+
+/** Drives a Layer in blocks of 48 with a fake clock. Output goes to `out`. */
+struct Rig
+{
+    fx::Layer         layer;
+    fx::SlotSettings  settings[fx::kNumSlots];
+    Scale             mute{0.0f}, half{0.5f};
+    fx::BlockInfo     info;
+    std::vector<float> in, out;
+    size_t            t = 0;
+
+    Rig(bool running)
+    {
+        for(auto& s : settings)
+            s = fx::DefaultSettings();
+        layer.Init(kSr, settings);
+        layer.SetEngine(0, &mute); // slot 0 = silences the signal
+        layer.SetEngine(1, &half); // slot 1 = halves it
+        info.running         = running;
+        info.samples_per_bar = 88615.0f; // 130 BPM
+        info.pos_in_bar      = 100.0f;
+        info.buttons_active  = true;
+        in                   = Sine(440, 48000 * 3);
+    }
+    void Blocks(size_t count)
+    {
+        for(size_t b = 0; b < count; b++)
+        {
+            float l[kBlock], r[kBlock];
+            layer.Process(info, &in[t], &in[t], l, r, kBlock);
+            for(size_t i = 0; i < kBlock; i++)
+                out.push_back(l[i]);
+            t += kBlock;
+            info.pos_in_bar += kBlock;
+        }
+    }
+    /** Sample index of the first output that differs from the input by more than 1e-6 */
+    long FirstChange(size_t from = 0) const
+    {
+        for(size_t i = from; i < out.size(); i++)
+            if(std::fabs(out[i] - in[i]) > 1e-6f)
+                return static_cast<long>(i);
+        return -1;
+    }
+};
+
+static void TestQuantisedStartStop()
+{
+    std::printf("button -> quantised start / stop\n");
+    const double spl = 88615.0 / 16.0; // one 1/16 of the bar (5538 samples)
+    {
+        Rig r(true);
+        r.Blocks(3);                // clean start
+        r.info.raw_mask = 1u << 0;  // hold slot 0 (mutes)
+        r.Blocks(200);
+        const long first = r.FirstChange();
+        // pos at sample 0 is 100; the first line after the press is at pos = spl
+        const long expect = static_cast<long>(std::ceil(spl - 100.0));
+        CHECK(first >= expect - 1 && first <= expect + 2, "fx starts on the 1/16 line (got %ld, expected %ld)", first, expect);
+        CHECK(Rms(r.out, r.out.size() - 480, r.out.size()) < 1e-6f, "fx is fully on a little later");
+        // release; it should stop at the next line
+        r.info.raw_mask = 0;
+        const size_t before = r.out.size();
+        r.Blocks(200);
+        // find first sample after release where output returns to dry: scan for rms > 0
+        size_t back = 0;
+        for(size_t i = before; i < r.out.size(); i++)
+            if(std::fabs(r.out[i]) > 1e-4f)
+            {
+                back = i;
+                break;
+            }
+        const double pos_at_release = 100.0 + static_cast<double>(before);
+        const double next_line      = std::ceil(pos_at_release / spl) * spl;
+        const long   want           = static_cast<long>(next_line - pos_at_release) + static_cast<long>(before);
+        CHECK(back > 0 && std::labs(static_cast<long>(back) - want) < 20, "fx ends on the next 1/16 line (got %zu, expected ~%ld)", back, want);
+    }
+    {
+        Rig r(true);
+        r.Blocks(3);
+        r.info.raw_mask = 1u << 0; // a tap: down for 3 blocks only (3 ms)
+        r.Blocks(3);
+        r.info.raw_mask = 0;
+        r.Blocks(400);
+        long first = r.FirstChange();
+        CHECK(first > 0, "a short tap still starts the fx at the line");
+        // and it stops at the following line
+        size_t back = 0;
+        for(size_t i = static_cast<size_t>(first) + 2000; i < r.out.size(); i++)
+            if(std::fabs(r.out[i]) > 1e-4f)
+            {
+                back = i;
+                break;
+            }
+        CHECK(back > 0 && static_cast<double>(back - static_cast<size_t>(first)) < spl + 300, "tap lasts about one 1/16 (%zu samples)", back - static_cast<size_t>(first));
+    }
+    {
+        Rig r(false); // no clock: at once
+        r.info.raw_mask = 1u << 0;
+        r.Blocks(20);
+        CHECK(Rms(r.out, 480, 960) < 1e-6f, "no clock: fx starts at once");
+    }
+}
+
+static void TestLatchAndLayer()
+{
+    std::printf("latch, newest wins, layer gating\n");
+    Rig r(false);
+    r.info.shift    = true;
+    r.info.raw_mask = 1u << 0; // Shift + slot 0
+    r.Blocks(10);
+    r.info.raw_mask = 0;
+    r.info.shift    = false;
+    r.Blocks(20);
+    CHECK(Rms(r.out, r.out.size() - 480, r.out.size()) < 1e-6f, "Shift + button latches the fx on after release");
+    CHECK(r.layer.GetStatus().latch == 0 && r.layer.GetStatus().edit == 0, "latch and edit slot are slot 0");
+
+    // layer deselected: presses ignored, latch keeps running
+    r.info.buttons_active = false;
+    r.info.raw_mask       = 1u << 1;
+    r.Blocks(10);
+    CHECK(r.layer.GetStatus().edit == 0, "buttons ignored while layer 2 is not selected");
+    CHECK(Rms(r.out, r.out.size() - 480, r.out.size()) < 1e-6f, "latched fx keeps running on another layer");
+    r.info.buttons_active = true;
+    r.info.raw_mask       = 0;
+    r.Blocks(10);
+
+    // hold slot 1 over the latch: newest wins; release goes back to the latch
+    r.info.raw_mask = 1u << 1;
+    r.Blocks(20);
+    const float rms_half = Rms(r.out, r.out.size() - 480, r.out.size()) / Rms(r.in, r.out.size() - 480, r.out.size());
+    CHECK(std::fabs(rms_half - 0.5f) < 0.01f, "held button overrides the latch (ratio %.3f)", rms_half);
+    CHECK(r.layer.GetStatus().edit == 1, "edit slot follows the last button");
+    r.info.raw_mask = 0;
+    r.Blocks(20);
+    CHECK(Rms(r.out, r.out.size() - 480, r.out.size()) < 1e-6f, "after release the latch is back");
+
+    // Shift + same button again = off
+    r.info.shift    = true;
+    r.info.raw_mask = 1u << 0;
+    r.Blocks(10);
+    r.info.raw_mask = 0;
+    r.info.shift    = false;
+    r.Blocks(20);
+    const float ratio = Rms(r.out, r.out.size() - 480, r.out.size()) / Rms(r.in, r.out.size() - 480, r.out.size());
+    CHECK(std::fabs(ratio - 1.0f) < 0.01f, "Shift + button again turns the latch off");
+
+    // unbuilt slot
+    r.info.raw_mask = 1u << 5;
+    r.Blocks(5);
+    fx::Event e;
+    bool      saw = false;
+    while(r.layer.PopEvent(e))
+        if(e.type == fx::EventType::NotBuilt && e.slot == 5)
+            saw = true;
+    CHECK(saw, "pressing a slot with no fx gives a 'not built' event");
+    CHECK(r.layer.GetStatus().edit == 0, "an unbuilt slot does not become the edit slot");
+}
+
+static void TestNoClicks()
+{
+    std::printf("no clicks when an fx starts, switches or stops\n");
+    Rig r(false);
+    r.Blocks(5);
+    r.info.raw_mask = 1u << 1; // halve
+    r.Blocks(30);
+    r.info.raw_mask = 1u << 0; // switch to mute
+    r.Blocks(30);
+    r.info.raw_mask = 0;       // stop
+    r.Blocks(30);
+    float worst = 0;
+    for(size_t i = 1; i < r.out.size(); i++)
+        worst = std::max(worst, std::fabs(r.out[i] - r.out[i - 1]));
+    const float normal = static_cast<float>(2 * kPi * 440 / kSr * 0.5);
+    CHECK(worst < normal * 1.6f, "biggest step %.4f vs %.4f for the plain sine", worst, normal);
+}
+
+int main()
+{
+    TestStage();
+    TestBitCrush();
+    TestQuantisedStartStop();
+    TestLatchAndLayer();
+    TestNoClicks();
+    std::printf("\n%d checks, %d failed\n", g_checks, g_fails);
+    return g_fails ? 1 : 0;
+}

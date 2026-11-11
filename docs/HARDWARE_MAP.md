@@ -10,7 +10,7 @@ Only the assignments in "Control assignments" below are active. Every other pot/
 | Seed LED | 1 | `hw.seed.SetLed(bool)` | Blinks as heartbeat |
 | CV inputs | 2 | `hw.cv[0..1]` | Unused |
 | Gate inputs | 2 | `hw.gate_in[0..1]` | Unused |
-| Toggles | 2 | `hw.tog_sw17` (2-way), `hw.tog_sw18` (3-way) | Unused |
+| Toggles | 2 | `hw.tog_sw17` (2-way), `hw.tog_sw18` (3-way) | **3-way = layer** (up = 1 looper + beat repeat, middle = 2 punch-in fx, down = 3 not built). **2-way = edit / perf** mode of layer 2 (`kEditWhenSwitchPressed` in `main.cpp` flips which way is edit). Log: `Layer 2`, `Edit mode` / `Perf mode`. |
 | MIDI DIN | in/out | `hw.midi` | Input used for CC (below) and for MIDI clock / Start / Stop. USB MIDI disabled for now |
 | DAC out | 2 | `hw.SetDacOut(channel, 0..4095)` | Unused |
 | Audio | stereo in/out | AudioCallback `in[0..1]`, `out[0..1]` | Processed by the signal chain (see ARCHITECTURE.md) |
@@ -48,6 +48,16 @@ Hold **Button 8 (SHIFT)** for the second function. Knobs use soft takeover: afte
 | 5-8 | - | - | - |
 
 CC numbers are accepted on **any MIDI channel**; each parameter has exactly one CC (values 0-127 map to 0.0-1.0 of the control, then to real units as for the knob).
+
+## Layer 2: punch-in fx (0.10.0; 3-way switch in the middle)
+The B1/B2 looper buttons and B9-B16 beat repeat work on layer 1 only. On layer 2 **B1-B7 and B9-B16 are 15 fx buttons** (B8 = Shift). Only B7 (bit crusher) exists so far; the others log `FX B3 not built yet`.
+Planned map: B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop.
+- **Hold** a button = fx on; **Shift + button** = latch (Shift + same button = off; one latch at a time). Start and stop land on the next 1/16 line (at once if no MIDI clock). Newest button wins. Only one fx runs at a time (5 ms crossfade). A latched fx keeps running when you change layer.
+- The last button pressed is the **edit slot**. **Edit mode** (2-way switch): K1-K4 = that fx's own params, K5 out gain (+-8 dB), K6 wet/dry, K7 hipass (20 Hz-2 kHz, bottom = off), K8 lopass (20 kHz-200 Hz, top = off). **Perf mode**: knobs locked. Soft takeover on every knob: after selecting another fx a knob does nothing until it reaches that fx's stored value (log shows `(pickup)`).
+- Bit crusher (B7): K1 bit depth 16..2, K2 sample hold 1..32 samples, K3/K4 unused.
+- Not saved yet (reset at power-up); saving to the Seed's flash is planned.
+- Log: `FX B7 Bit crusher ON`, `FX OFF`, `FX latch Bit crusher`, `FX latch OFF`, `FX edit: Bit crusher`, `K1 Bit depth - 9.0 bits`, `K5 Out gain - +2.0 dB`, `K6 Wet/dry - 100%`, `K7 Hipass - off`, `K8 Lopass - 5000 Hz`.
+- LEDs (layer 2): a fx button LED is dim if that fx exists, brighter = edit slot (edit mode), brighter again = latched, full = ON, flashing = waiting for its line. LED 8 = edit (glow) / perf (dim). Layer 3: LED 8 flashes slowly.
 
 ## LEDs (0.4.3)
 - **Beat repeat buttons 9-16** (their LED flashes from the press until the 1/16 line; LED 16 is shared with the loop-audible glow; the stutter LED wins): their LED flashes fast while waiting for the slice boundary and glows dimly (0.02, same as the loop-length LEDs) while repeating held, brighter (0.15) while latched on; the eighth-note LED stays brighter on top.
