@@ -1,4 +1,4 @@
-/** 004-Looper : audio looper prototype (Desktop DevKit + Daisy Seed)
+/** 005-PunchFx : audio looper prototype (Desktop DevKit + Daisy Seed)
  *
  *  What this program does right now:
  *   - Starts the hardware (knobs, buttons, LEDs, audio).
@@ -31,7 +31,6 @@
 #include "engine/beat_repeat.h"
 #include "engine/clock_tracker.h"
 #include "engine/quantized_loop_buffer.h"
-#include "engine/slice_loop_buffer.h"
 #include "engine/looper_config.h"
 #include "engine/pitch_fx.h"
 
@@ -68,17 +67,7 @@ DSY_SDRAM_BSS static float loop_buf_r[looper::kLoopCapacityFrames];
 BeatRepeat beat_repeat;
 
 /** B6 pitch-down effect on the beat repeat output (src/engine/pitch_fx.h). */
-static PitchFx pitch_fx; // on the beat repeat output (slice mode pitches the slice itself)
-
-/** Slice mode (B7), src/engine/slice_loop_buffer.h: the SLICE LOOP BUFFER, a frozen
- *  2-bar loop played like a drum kit. It has its own 2-bar recording of the input
- *  (about 1.4 MB at the 130 BPM minimum), separate from the beat repeat's history. */
-SliceLoopBuffer slice_loop;
-DSY_SDRAM_BSS static float slice_buf_l[looper::kHistoryCapacityFrames];
-DSY_SDRAM_BSS static float slice_buf_r[looper::kHistoryCapacityFrames];
-
-/** B7 / Shift + B7 commands waiting for the audio callback. */
-SpscQueue<SliceCmd, 8> slice_cmd_queue;
+static PitchFx pitch_fx; // on the beat repeat output 
 
 /** Which division is latched on by Shift + B9-B16 (-1 = none). Written by the
  *  audio callback, read by the LEDs (main_page.h). */
@@ -264,38 +253,6 @@ static void LogBeatEvents()
     }
 }
 
-/** Turn the slice mode's events into log lines. Called every audio block. */
-static void LogSliceEvents()
-{
-    SliceEvent e;
-    while(slice_loop.PopEvent(e))
-    {
-        FixedCapStr<32> s;
-        switch(e.type)
-        {
-            case SliceEventType::ModeOn: s.Append("Slice mode ON"); break;
-            case SliceEventType::ModeOff: s.Append("Slice mode OFF"); break;
-            case SliceEventType::Bank:
-                s.Append("Slice bank ");
-                s.AppendInt(static_cast<int>(e.a) + 1);
-                break;
-            case SliceEventType::SliceOn:
-                s.Append("Slice ");
-                s.AppendInt(static_cast<int>(e.a) + 1);
-                break;
-            case SliceEventType::BackToLoop: s.Append("Slice loop"); break;
-            case SliceEventType::IgnoredNotRunning: s.Append("B7 ignored - not running"); break;
-            case SliceEventType::IgnoredNoMode: s.Append("Bank ignored - no slice mode"); break;
-            case SliceEventType::IgnoredOneBank: s.Append("Bank ignored - 1 bar only"); break;
-            case SliceEventType::PitchOn: s.Append("Pitch fx ON (+3 ping-pong)"); break;
-            case SliceEventType::PitchOff: s.Append("Pitch fx OFF"); break;
-            case SliceEventType::IgnoredTooShort: s.Append("Slice mode ignored - too short"); break;
-            case SliceEventType::IgnoredTooSlow: s.Append("Slice mode ignored - too slow"); break;
-        }
-        Say(s);
-    }
-}
-
 /** Largest block the looper is given at once (libDaisy's default is 48). */
 static constexpr size_t kMaxChunk = 128;
 
@@ -304,10 +261,6 @@ static constexpr size_t kMaxChunk = 128;
  *  the result every 30 s: avg = smoothed average, max = the worst block in the 30 s,
  *  as a percent of the time one block has (100% = the audio would drop out). */
 static CpuLoadMeter cpu_meter;
-
-/** Slice mode B6: with the backwards half (ping-pong) or forward only. Shift + B6 toggles it.
- *  Default off (forward only). Nothing is saved: it is off again at power-up. */
-static bool slice_reverse = false;
 
 /** Runs for every small block of audio. `in` and `out` hold left/right samples:
  *  in[0][i] = left input,  in[1][i] = right input
@@ -343,12 +296,6 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     while(loop_cmd_queue.Pop(cmd))
         quantized_loop.Command(cmd, info);
 
-    // Slice mode (B7): apply its button commands.
-    const bool slice_can = st.running && clock_tracker.SamplesPerBar() > 0.0f;
-    SliceCmd   slice_cmd;
-    while(slice_cmd_queue.Pop(slice_cmd))
-        slice_loop.Command(slice_cmd, slice_can);
-
     // Beat repeat: which of buttons 9-16 are down (read straight from the
     // hardware each block: a long press would hide the release event).
     BeatBlockInfo beat_info;
@@ -367,8 +314,6 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     //  - A normal held press works as before and overrides the latch while
     //    it is down (on release the latched division carries on).
     //  - Transport stopped / clock lost: the latch is cleared.
-    uint32_t slice_held = 0; // buttons 9-16 for the slice mode (bit i = slice i of the bank)
-    bool     slice_pitch_held = false; // B6 for the slice mode
     {
         static uint32_t prev_raw = 0, shift_blocked = 0;
         uint32_t        raw      = 0;
@@ -381,8 +326,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
             shift_blocked |= newly; // newly pressed while Shift is down
             for(size_t i = 0; i < looper::kNumDivisions; i++)
             {
-                // (In slice mode Shift + B9-B16 does nothing: no latch.)
-                if(!(newly & (1u << i)) || !st.running || slice_loop.IsOn())
+                if(!(newly & (1u << i)) || !st.running)
                     continue;
                 FixedCapStr<32> s;
                 if(stutter_latch == static_cast<int8_t>(i))
@@ -405,47 +349,23 @@ void AudioCallback(AudioHandle::InputBuffer  in,
             stutter_latch = -1;
         // B6 = pitch-down effect (hold). Like the stutter buttons, a B6 that is
         // pressed while Shift is held does nothing until it is released.
-        static bool prev_b6 = false, b6_blocked = false, prev_b6_for_rev = false;
+        static bool prev_b6 = false, b6_blocked = false;
         const bool  b6      = hw.button[5].Pressed();
         if(b6 && !prev_b6 && hw.button[7].Pressed())
             b6_blocked = true;
         if(!b6)
             b6_blocked = false;
         prev_b6 = b6;
-        // Shift + B6 toggles the REVERSE half of the slice mode B6 effect (default off:
-        // forward only). The press itself does not switch the effect on (b6_blocked).
-        if(b6 && !prev_b6_for_rev && hw.button[7].Pressed())
-        {
-            slice_reverse = !slice_reverse;
-            Say(FixedCapStr<32>(slice_reverse ? "Pitch reverse ON" : "Pitch reverse OFF"));
-        }
-        prev_b6_for_rev = b6;
-        beat_info.pitch_held = b6 && !b6_blocked && !slice_loop.IsOn();
-        slice_pitch_held     = b6 && !b6_blocked; // (the slice engine ignores it unless slice mode is on)
+        beat_info.pitch_held = b6 && !b6_blocked;
         beat_info.held_mask = raw & ~shift_blocked;
         if(stutter_latch >= 0)
             beat_info.held_mask |= 1u << stutter_latch;
-        slice_held = raw & ~shift_blocked;
-        // In slice mode buttons 9-16 play slices, not the beat repeat.
-        if(slice_loop.IsOn())
-            beat_info.held_mask = 0;
     }
-    SliceBlockInfo slice_info;
-    slice_info.running         = st.running;
-    slice_info.bar             = beat_info.bar;
-    slice_info.samples_per_bar = beat_info.samples_per_bar;
-    slice_info.offset_samples  = beat_info.offset_samples;
-    slice_info.held_mask       = slice_held;
-    slice_info.pitch_held      = slice_pitch_held;
-    slice_info.fx_semitones    = looper::SlicePitchFromControl(params.slice_pitch);
-    slice_info.fx_reverse      = slice_reverse;
-
     // Pass the latest settings to the effects.
     gain_stage.SetControls(params.input_gain, params.out_level);
 
     // SIGNAL CHAIN (left = channel 0, right = channel 1):
-    //   input gain -> beat repeat -> [Slice loop buffer mixed in] -> Quantized loop buffer
-    //   -> [Slice loop buffer mixed in again] -> soft clip + output level + ceiling
+    //   input gain -> beat repeat -> pitch fx -> Quantized loop buffer -> soft clip + output level + ceiling
     size_t done = 0;
     while(done < size)
     {
@@ -453,8 +373,6 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         float        perf_l[kMaxChunk], perf_r[kMaxChunk];
         float        rep_l[kMaxChunk], rep_r[kMaxChunk];
         float        loop_l[kMaxChunk], loop_r[kMaxChunk];
-        float        sl_l[kMaxChunk], sl_r[kMaxChunk], base_w[kMaxChunk];
-        float        pp_l[kMaxChunk], pp_r[kMaxChunk];
         for(size_t i = 0; i < n; i++)
         {
             perf_l[i] = gain_stage.Gain(in[0][done + i]);
@@ -465,31 +383,19 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         pitch_fx.Process(rep_l, rep_r, n, beat_repeat.RepeatIndex(),
                          beat_repeat.PitchOn() && beat_repeat.Repeating(),
                          beat_repeat.JumpStartIndex());
-        // Slice mode: base_w = how much of the normal signal is left, sl = the slice
-        // loop buffer's part. output = base_w * normal + sl, applied twice:
-        //  1) to what the Quantized loop buffer RECORDS (so slices get recorded),
-        //  2) to what you HEAR (so slices are heard over a playing loop).
-        slice_info.pos_in_bar = beat_info.pos_in_bar;
-        slice_loop.Process(slice_info, perf_l, perf_r, sl_l, sl_r, base_w, n);
         beat_info.pos_in_bar += static_cast<float>(n);
-        for(size_t i = 0; i < n; i++)
-        {
-            pp_l[i] = base_w[i] * rep_l[i] + sl_l[i];
-            pp_r[i] = base_w[i] * rep_r[i] + sl_r[i];
-        }
-        quantized_loop.Process(info, pp_l, pp_r, loop_l, loop_r, n);
+        quantized_loop.Process(info, rep_l, rep_r, loop_l, loop_r, n);
         info.bar_start = false; // the bar boundary belongs to the first chunk only
         for(size_t i = 0; i < n; i++)
         {
-            out[0][done + i] = gain_stage.Limit(base_w[i] * loop_l[i] + sl_l[i]);
-            out[1][done + i] = gain_stage.Limit(base_w[i] * loop_r[i] + sl_r[i]);
+            out[0][done + i] = gain_stage.Limit(loop_l[i]);
+            out[1][done + i] = gain_stage.Limit(loop_r[i]);
         }
         done += n;
     }
 
     LogLoopEvents();
     LogBeatEvents();
-    LogSliceEvents();
     cpu_meter.OnBlockEnd();
 }
 
@@ -535,7 +441,6 @@ int main(void)
     // Tell the clock follower and the looper the sample rate.
     clock_tracker.Init(hw.seed.AudioSampleRate());
     quantized_loop.Init(loop_buf_l, loop_buf_r, looper::kLoopCapacityFrames, hw.seed.AudioSampleRate());
-    slice_loop.Init(slice_buf_l, slice_buf_r, looper::kHistoryCapacityFrames, hw.seed.AudioSampleRate());
     pitch_fx.Init(hw.seed.AudioSampleRate());
     beat_repeat.Init(hist_buf_l, hist_buf_r, looper::kHistoryCapacityFrames,
                      frz_buf_l, frz_buf_r, looper::kFreezeCapacityFrames,

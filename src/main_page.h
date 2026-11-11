@@ -8,7 +8,6 @@
 #include "engine/beat_repeat.h"
 #include "engine/clock_tracker.h"
 #include "engine/quantized_loop_buffer.h"
-#include "engine/slice_loop_buffer.h"
 #include "engine/looper_config.h"
 
 /** The MIDI clock follower, created in main.cpp. Read here for the LEDs. */
@@ -17,8 +16,6 @@ extern ClockTracker clock_tracker;
 /** The looper and its button-command queue, created in main.cpp. */
 extern QuantizedLoopBuffer quantized_loop;
 extern BeatRepeat beat_repeat;
-extern SliceLoopBuffer slice_loop;
-extern SpscQueue<SliceCmd, 8> slice_cmd_queue;
 extern volatile int8_t stutter_latch;
 extern SpscQueue<LoopCmd, 16> loop_cmd_queue;
 
@@ -99,9 +96,6 @@ class MainPage : public daisy::UiPage
                 loop_cmd_queue.Push(shift_ ? LoopCmd::Clear : LoopCmd::ArmToggle);
             else if(buttonID == 1)
                 loop_cmd_queue.Push(LoopCmd::ToggleSource);
-            // Button 7 = slice mode on/off (Shift + B7 = switch bank; with 1 bank it just logs).
-            else if(buttonID == 6)
-                slice_cmd_queue.Push(shift_ ? SliceCmd::ToggleBank : SliceCmd::ToggleMode);
         }
         // Shift + button 16 long press: print the firmware version.
         // (Button 16 is also the 1/64 stutter; the audio callback ignores a
@@ -188,8 +182,6 @@ class MainPage : public daisy::UiPage
      *     (dark = live input).
      *  Buttons 9-16 (beat repeat): fast flash = waiting for the slice boundary,
      *  dim glow = repeating while held, brighter glow = latched on (Shift + button).
-     *  Slice mode (B7): LED 7 on (bank 2 pulses if there are 2 banks), LEDs 9-16 show the slices
-     *  (see the code below).
      *  For 1.5 s after knob 2 (or CC 21) changes the loop length, LEDs 1-8
      *  show the new length instead (LEDs 1..N lit).
      *  No clock: LEDs 9 and 16 blink slowly. Clock but stopped: the bottom
@@ -261,33 +253,14 @@ class MainPage : public daisy::UiPage
                 = bs.active == stutter_latch ? kLedStutterLatched : kLedStutterHeld;
         if(bs.pending >= 0)
             led[8 + bs.pending] = fast ? kLedFull : 0.0f;
+        const bool pitch_pending = bs.pitch_pending;
+        const bool pitch_on      = bs.pitch_on;
         // B6 pitch effect: LED 6 flashes fast until its 1/16 line, then glows
         // (replaces the bar-6 LED while it is on).
-        const SliceStatus ss0 = slice_loop.GetStatus();
-        const bool        pitch_pending = ss0.on ? ss0.pitch_pending : bs.pitch_pending;
-        const bool        pitch_on      = ss0.on ? ss0.pitch_on : bs.pitch_on;
         if(pitch_pending)
             led[5] = fast ? kLedFull : 0.0f;
         else if(pitch_on)
             led[5] = kLedFull;
-        // Slice mode (B7): LED 7 = mode (bank 1 steady, bank 2 pulsing, fast flash
-        // while the B7 press waits for its 1/8 line). LEDs 9-16 = the 8 slices of the
-        // bank (dim), the repeating one brighter, a pressed one flashes until its line.
-        const SliceStatus ss = slice_loop.GetStatus();
-        if(ss.on || ss.changing)
-        {
-            led[6] = ss.changing ? (fast ? kLedFull : 0.0f)
-                                 : (ss.bank == 0 ? kLedFull : (slow ? kLedFull : kLedCycleDim));
-            if(ss.on)
-            {
-                for(int i = 8; i < 16; i++)
-                    led[i] = kLedSliceDim;
-                if(ss.playing >= 0)
-                    led[8 + ss.playing] = kLedSlicePlaying;
-                if(ss.pending >= 0)
-                    led[8 + ss.pending] = fast ? kLedFull : 0.0f;
-            }
-        }
         if(st.running)
         {
             led[8 + st.eighth] = 1.0f;
@@ -315,8 +288,6 @@ class MainPage : public daisy::UiPage
     static constexpr float kLedCycleDim = 0.02f; // top row: LEDs of the loop cycle
     static constexpr float kLedFull     = 1.0f;  // active bar, flashes, eighth-note
     static constexpr float kLedStutterHeld    = kLedCycleDim; // button LED while its stutter repeats (button held): same as the loop-length LEDs
-    static constexpr float kLedSliceDim       = 0.04f; // slice mode: the 8 slices of the bank (about 12%)
-    static constexpr float kLedSlicePlaying   = 0.5f;  // slice mode: the slice that is repeating (about 86%)
     static constexpr float kLedStutterLatched = 0.15f;        // ... while it is latched on with Shift + button (brighter, about 37%)
 
     /** How long (ms) the loop length stays on LEDs 1-8 after K2 moves. */

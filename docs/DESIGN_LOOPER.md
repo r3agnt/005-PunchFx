@@ -1,21 +1,21 @@
 # Looper design (current behaviour)
 
-Audio looper + beat-repeat + slice mode, locked to MIDI clock from the DIN input. Stereo, 4/4 only, 48 kHz.
+Audio looper + beat-repeat (layer 1 of 005-PunchFx), locked to MIDI clock from the DIN input. Stereo, 4/4 only, 48 kHz.
 Controls, LEDs and log text: `docs/HARDWARE_MAP.md`. Signal chain: `docs/ARCHITECTURE.md`. Version history: `docs/CHANGELOG.md`.
 Older, longer version of this file (with rewrite history): `docs/archive/DESIGN_LOOPER_FULL.md`.
 
 ## Signal flow
 ```
 input -> gain -> beat repeat (live, or stutter from the 2-bar history) -> pitch fx (B6)
-      -> slice mode mix -> Quantized loop buffer (records this; plays the loop or passes live)
-      -> slice mode mix again -> SoftClip -> output level (ceiling 0.9)
+      -> Quantized loop buffer (records this; plays the loop or passes live)
+      -> SoftClip -> output level (ceiling 0.9)
 ```
 - Beat repeat only stutters the **input** history, never the loop playback. The loop records the beat-repeat output.
 - Live input, stutter and loop playback share the same converter latency, so switching between them is in time (only a short crossfade). Round-trip latency not measured.
-- Real timing risk is **audio vs clock** (DAW audio late against its MIDI clock): handled by the **input offset** (Shift + K3, +/-20 ms) applied to where slices are read, not as a delay on the live signal. It does not shift loop starts yet.
+- Real timing risk is **audio vs clock** (DAW audio late against its MIDI clock): handled by the **input offset** (Shift + K3, +/-20 ms) applied to where beat-repeat slices are read, not as a delay on the live signal. It does not shift loop starts yet.
 
 ## Names
-**Quantized loop buffer** = global looper on B1/B2 (`quantized_loop_buffer.h`). **Slice loop buffer** = frozen bar of slice mode on B7 (`slice_loop_buffer.h`). **Beat repeat** = stutter on B9-B16 (`beat_repeat.h`).
+**Quantized loop buffer** = global looper on B1/B2 (`quantized_loop_buffer.h`). **Beat repeat** = stutter on B9-B16 (`beat_repeat.h`).
 
 ## Clock and transport
 - 24 ticks per beat; 96 per bar; 8 eighths per bar. Messages come from libDaisy `StartReceiveRt`, are queued and stamped per audio block (up to ~1 ms late). Tempo is measured over one bar.
@@ -44,37 +44,28 @@ input -> gain -> beat repeat (live, or stutter from the 2-bar history) -> pitch 
 - Heard only when the output is live (B2) or while recording; what is recorded into the loop is the stutter output.
 
 ## Pitch fx on the beat repeat (B6; `pitch_fx.h`)
-- B6 held = on; on/off wait for the next 1/16 line. Ignored with Shift, while stopped, or in slice mode.
+- B6 held = on; on/off wait for the next 1/16 line. Ignored with Shift and while stopped.
 - Each repeat of the held slice is 1 semitone lower (max 12, `kPitchStepSemitones`/`kPitchMaxSteps`); count restarts on a new slice, a flip, or release. B6 with no stutter held is "armed".
 - `PitchFx` is an exact delay-line shifter that keeps the slice length. Each repeat starts a new head 1 sample behind (5 ms crossfade ending on the beat, `BeatRepeat::JumpStartIndex()`), so attacks are on the beat. A head more than 10 ms behind hops forward (`kPitchMaxDelayFrames`/`kPitchHopFrames` = 480): slow deep drops are slightly grainy. Raise both for smoother but later repeats. (DaisySP `PitchShifter` was rejected: inexact downwards.)
 
-## Slice mode (B7; `slice_loop_buffer.h`)
-- Own 2-bar ring that records the live input; B7 freezes it so the beat repeat history is untouched.
-- **B7 on**: at the next **bar line** (shifted by input offset) freezes the whole bar that just ended (`kSliceBanks` = 1; B9 = beat 1 ... B16 = last eighth) and plays it as a loop in time with the clock, re-aligned every bar. If a whole bar is not recorded yet it waits (LED 7 flashes fast); pressing B7 again cancels. **B7 off**: next 1/8 line. Slice mode is heard instead of the loop/live; those keep running underneath.
-- **Slice button**: waits for the next 1/8 line, repeats that eighth while held; newest wins, release falls back to an older held one. Releasing the last button loops the bar from the NEXT slice, until a new slice is pressed.
-- **Bar line = reset**: at each bar line a held slice is choked (stays choked until re-pressed) and a rotated loop goes back to the plain loop from beat 1. A button pressed just before the bar line lands on it and plays.
-- **B6 in slice mode**: a held slice plays pitched (K4: -12..+12 st, default +3, whole semitones, CC 24, takes effect on the next 1/8 line), read like tape. **Shift + B6** toggles the reverse half (default OFF): off = whole eighth forward at the raised pitch, restarted every 1/8 line with a 5 ms crossfade; on = forward-then-backward ping-pong (first 16th forward, second 16th backwards, continuous so no seam). **Pitch reverse needs work (parked, 2026-11-11).**
-- Beat repeat and its latch are off while slice mode is on. The slice output is mixed into the Quantized loop buffer's input (recorded) and over its output (heard over a playing loop). Stop ends slice mode at once (`B7 ignored - not running` while stopped). Shift + B7 is ignored with 1 bar (`Bank ignored - 1 bar only`).
-- Limits: window must fit the ring (`too slow`); an eighth under 10 ms is refused; the window keeps its sample length if the tempo changes while frozen.
-
 ## Memory (Seed has 64 MB SDRAM) and minimum tempo
-Stereo float, ~384 KB/s. Sizes come from `kMaxLoopBars` (8), `kMinBpm` (**130**, fixed, no control) and `kHistoryBars` (2) in `looper_config.h`: loop 5.7 MB, history 1.4 MB, stutter slots 1.8 MB, Slice loop buffer 1.4 MB = **10.4 MB** (15.5% of 64 MB). Memory is proportional to 1 / kMinBpm.
+Stereo float, ~384 KB/s. Sizes come from `kMaxLoopBars` (8), `kMinBpm` (**130**, fixed, no control) and `kHistoryBars` (2) in `looper_config.h`: loop 5.7 MB, history 1.4 MB, stutter slots 1.8 MB = **8.9 MB** (13% of 64 MB). Memory is proportional to 1 / kMinBpm.
 
 | Min BPM | Loop | History | Slots | Total (MB) |
 |---|---|---|---|---|
 | 100 | 7.4 | 1.9 | 2.3 | 11.6 |
 | 120 | 6.2 | 1.6 | 2.0 | 9.7 |
-| **130 (now)** | 5.7 | 1.4 | 1.8 | 8.9 (+1.4 slice) |
+| **130 (now)** | 5.7 | 1.4 | 1.8 | 8.9 |
 | 160 | 4.6 | 1.2 | 1.5 | 7.3 |
 
 At 130 BPM a bar = 1.85 s. A loop of N bars is accepted only if it fits (8 bars down to 130 BPM, 4 down to 65, 2 down to 32). Below ~130 BPM the long stutter divisions are refused (`Stutter ignored - tempo too slow`). To change: edit `kMinBpm`, rebuild, check the SDRAM line of `make`, and update tests (`test_clock.cpp` `TestConfig`, `test_quantized_loop_buffer.cpp` `TestRefusals` at 100/150 BPM, `test_beat.cpp` runs at 138.89 BPM so keep it at or above `kMinBpm`).
 
 ## Testing
-`make -C test` builds the plain-C++ engine (`src/engine/`) on the Mac with fake clock ticks and test signals: `test_beat.cpp` (beat repeat, sample-exact at 138.89 BPM), `test_quantized_loop_buffer.cpp` (loop with a fake DAW, drift, clicks, also run with address/UB checking), `test_slice.cpp`, `test_pitch.cpp`, `test_clock.cpp`. Add a test for every engine feature, including numerical click checks at every crossfade, before it goes into the firmware.
+`make -C test` builds the plain-C++ engine (`src/engine/`) on the Mac with fake clock ticks and test signals: `test_beat.cpp` (beat repeat, sample-exact at 138.89 BPM), `test_quantized_loop_buffer.cpp` (loop with a fake DAW, drift, clicks, also run with address/UB checking), `test_pitch.cpp`, `test_clock.cpp`. Add a test for every engine feature, including numerical click checks at every crossfade, before it goes into the firmware.
 
 ## Assumptions (change if wrong)
-- Loop lengths 1/2/4/8 bars. K2 also on CC 21 (CC 20 input gain, 22 output level, 23 offset, 24 slice pitch).
+- Loop lengths 1/2/4/8 bars. K2 also on CC 21 (CC 20 input gain, 22 output level, 23 offset).
 - "No clock" (LEDs 9 and 16 blink) and "clock but stopped" (bottom row dim) patterns.
 
 ## Ideas / not done
-Apply the input offset to loop starts; hardware-timer clock timestamps; 16-bar loops; USB MIDI clock; Continue / Song Position Pointer; overdub; save/restore; more FX on beat repeat and slice mode; rework slice pitch reverse.
+Apply the input offset to loop starts; hardware-timer clock timestamps; 16-bar loops; USB MIDI clock; Continue / Song Position Pointer; overdub; save/restore. Punch-in fx (layer 2) and the reverse fx: see `docs/IDEAS.md` and `CLAUDE.md`.

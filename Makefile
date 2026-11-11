@@ -1,5 +1,5 @@
 # Project Name
-TARGET = 004-Looper
+TARGET = 005-PunchFx
 
 # Configure for debugging
 # common configurations:

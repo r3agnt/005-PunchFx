@@ -1,4 +1,4 @@
-# 004-Looper
+# 005-PunchFx
 
 Audio looper prototype on the Daisy Seed 3 + Desktop DevKit. Forked from 003-ChannelStrip (framework only; EQ and saturator removed).
 
@@ -9,7 +9,7 @@ See `CLAUDE.md` (project rules and file map), `docs/HARDWARE_MAP.md` and `docs/A
 ## Build
     make clean && make
 
-Output: `build/004-Looper.bin`.
+Output: `build/005-PunchFx.bin`.
 
 ## Test (Mac-side, no hardware)
     make -C test

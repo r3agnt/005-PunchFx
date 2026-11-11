@@ -73,37 +73,6 @@ constexpr int kPitchMaxSteps      = 12; // never lower than one octave
 constexpr size_t kPitchMaxDelayFrames = 480; // 10 ms: the most a head may lag the beat
 constexpr size_t kPitchHopFrames      = 480; // a hop recovers all of it (back to about 1 frame behind)
 
-/** B6 in SLICE mode (0.7.2): the held slice plays kSliceFxSemitones higher, forward for the
- *  first 16th of the eighth and BACKWARDS for the second 16th (a "ping-pong"), repeating every
- *  eighth. The slice is a recording, so it is simply read faster (like tape); reading forward
- *  then back over the same piece keeps the length of every repeat exactly one eighth. */
-constexpr int kSliceFxSemitones = 3; // the default (power-up) pitch; the pitch knob (K4) sets it, -12..+12
-constexpr int kSliceFxMinSemitones = -12;
-constexpr int kSliceFxMaxSemitones = 12;
-
-/** Pitch knob (K4) 0..1 -> whole semitones -12..+12. */
-inline int SlicePitchFromControl(float v)
-{
-    if(v < 0.0f)
-        v = 0.0f;
-    if(v > 1.0f)
-        v = 1.0f;
-    const float st = static_cast<float>(kSliceFxMinSemitones)
-                     + v * static_cast<float>(kSliceFxMaxSemitones - kSliceFxMinSemitones);
-    return static_cast<int>(st + (st < 0.0f ? -0.5f : 0.5f));
-}
-
-// ----- Slice mode (B7): the Slice loop buffer -----
-/** Slice mode freezes the last kSliceBanks bars and cuts them into eighth notes. */
-constexpr uint32_t kSliceBanks        = 1; // 0.5.2: 1 bar = 1 bank of 8 slices (2 would give 2 bars = 2 banks)
-constexpr uint32_t kSlicesPerBank     = 8; // buttons 9-16
-/** The slice presses/releases, B6 and B7 OFF are quantised to 1/kSliceQuantizeDen of
- *  a bar (8 = eighth notes). B7 ON waits for the next BAR line (0.5.2). */
-constexpr uint32_t kSliceQuantizeDen  = 8;
-static_assert(kSlicesPerBank * kSliceBanks == kSliceQuantizeDen * kSliceBanks,
-              "the frozen window is kSliceBanks bars of eighth notes");
-static_assert(kSlicesPerBank == kNumDivisions, "slice buttons are buttons 9-16");
-
 /** Text for the log: "1 bar", "1/2", "3/8" ... */
 inline const char *DivisionLabel(size_t i)
 {

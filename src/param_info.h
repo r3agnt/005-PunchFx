@@ -24,7 +24,6 @@ inline float ToPercent(float v) { return v; }
 inline float ToInputGainDb(float v) { return GainStage::InputGainDb(v); }
 inline float ToOutLevelDb(float v) { return GainStage::OutputLevelDb(v); }
 inline float ToOffsetMs(float v) { return looper::OffsetMsFromControl(v); }
-inline float ToSlicePitch(float v) { return static_cast<float>(looper::SlicePitchFromControl(v)); }
 inline float ToLoopBars(float v) { return static_cast<float>(looper::LoopBarsFromControl(v)); }
 
 static const ParamInfo kParamInfo[] = {
@@ -32,7 +31,6 @@ static const ParamInfo kParamInfo[] = {
     {&Params::loop_length, "Loop length", Unit::Bars, ToLoopBars},
     {&Params::input_gain, "Input gain", Unit::Db, ToInputGainDb},
     {&Params::out_level, "Output level", Unit::Db, ToOutLevelDb},
-    {&Params::slice_pitch, "Slice pitch (B6)", Unit::Semitones, ToSlicePitch},
 };
 
 /** Find the info row for a parameter (nullptr if not listed). */

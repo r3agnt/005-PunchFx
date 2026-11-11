@@ -17,7 +17,7 @@ The size limits and the cleanup steps are in `CLAUDE.md` ("Cleanup rule"). Claud
 |---|---|
 | Every code change | `src/version.h` + ONE line in `docs/CHANGELOG.md` |
 | A control, LED or log message | `docs/HARDWARE_MAP.md` |
-| Looper / beat repeat / slice / pitch behaviour | `docs/DESIGN_LOOPER.md` (current rules only, no "before 0.x" history) |
+| Looper / beat repeat / pitch behaviour | `docs/DESIGN_LOOPER.md` (current rules only, no "before 0.x" history) |
 | Hardware test result | `docs/HARDWARE_TEST.md` (fold passed items into "Passed") |
 | Controls/behaviour summary, new roadmap item | `CLAUDE.md` (short; no per-version history) |
 | Why / details of a change | the git commit message |

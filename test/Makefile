@@ -6,11 +6,10 @@ CXX      ?= c++
 CXXFLAGS ?= -std=c++14 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined
 HEADERS   = $(wildcard ../src/engine/*.h)
 
-all: build/test_clock build/test_quantized_loop_buffer build/test_beat build/test_slice build/test_pitch
+all: build/test_clock build/test_quantized_loop_buffer build/test_beat build/test_pitch
 	./build/test_clock
 	./build/test_quantized_loop_buffer
 	./build/test_beat
-	./build/test_slice
 	./build/test_pitch
 
 build/test_clock: test_clock.cpp $(HEADERS)
@@ -27,7 +26,7 @@ build/test_beat: test_beat.cpp $(HEADERS)
 
 build/test_slice: test_slice.cpp $(HEADERS)
 	mkdir -p build
-	$(CXX) $(CXXFLAGS) test_slice.cpp -o build/test_slice
+	$(CXX) $(CXXFLAGS) test_slice.cpp -o
 
 clean:
 	rm -rf build

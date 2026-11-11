@@ -19,11 +19,10 @@
  */
 struct Params
 {
-    float input_offset = 0.5f;       // slice offset against the clock: -20..+20 ms (0.5 = 0)
+    float input_offset = 0.5f;       // input offset against the clock (beat repeat): -20..+20 ms (0.5 = 0)
     float loop_length = 0.5f;        // loop cycle: 1, 2, 4 or 8 bars (0.5 = 4)
     float input_gain  = 1.0f / 3.0f; // -12..+24 dB, this default = 0 dB
     float out_level   = 1.0f;        // 1.0 = ceiling (0.9), lower = quieter
-    float slice_pitch = 0.625f;      // pitch of the slice mode B6 ping-pong: -12..+12 semitones (0.625 = +3)
 };
 
 /** Defined in main.cpp. */
@@ -45,7 +44,7 @@ constexpr PotAssign kPotMap[daisy::desktop_devkit::kNumPots] = {
     {nullptr, &Params::input_gain},          // Pot 1  (Shift: input gain)
     {&Params::loop_length, &Params::out_level, false}, // Pot 2  loop length, no pick-up (Shift: output level)
     {nullptr, &Params::input_offset, true, false}, // Pot 3  (Shift: input offset, no pick-up)
-    {&Params::slice_pitch, nullptr}, // Pot 4  (slice mode B6 pitch, -12..+12 semitones)
+    {nullptr, nullptr},             // Pot 4
     {nullptr, nullptr},             // Pot 5
     {nullptr, nullptr},             // Pot 6
     {nullptr, nullptr},             // Pot 7
@@ -63,7 +62,6 @@ constexpr CcAssign kCcMap[] = {
     {21, &Params::loop_length},
     {22, &Params::out_level},
     {23, &Params::input_offset},
-    {24, &Params::slice_pitch},
 };
 
 /** Set a parameter from a CC message. Returns true if the CC number is used. */
