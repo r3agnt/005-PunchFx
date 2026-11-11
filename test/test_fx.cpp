@@ -665,7 +665,7 @@ static void TestReverbLayer()
         CHECK(std::fabs(20 * std::log10(on_ratio) - 12.0f) < 0.3f, "reverb slot on: output gain +12 dB also lifts the dry (%.1f dB)", 20 * std::log10(on_ratio));
     }
     {
-        // K8 lopass on the reverb slot filters the DRY only; the reverb return is not lowpassed
+        // K8 lopass on the reverb slot filters what goes INTO the reverb: the dry is untouched, the return is darker
         const float lp_knob = 0.4f; // 1264 Hz
         BusRig r;
         r.in = Sine(5000, 48000 * 6);
@@ -676,24 +676,26 @@ static void TestReverbLayer()
         r.info.raw_mask = 1u << 0;
         r.Blocks(150);
         const float dry_only = Rms(r.out, 2400, 6000) / Rms(r.in, 2400, 6000);
-        CHECK(dry_only < 0.2f, "reverb slot on: the lopass cuts the dry 5 kHz (x%.2f)", dry_only);
-        BusRig q;
+        CHECK(std::fabs(dry_only - 1.0f) < 0.02f, "reverb slot on, lopass low: the dry 5 kHz is NOT filtered (x%.2f)", dry_only);
+        BusRig q; // wet 100%: the stand-in returns 0.5 * (what it is fed) at once
         q.in = r.in;
-        q.settings[0].v[fx::kWet] = 1.0f; // return at full level (the stand-in passes 0.5 * input at once)
+        q.settings[0].v[fx::kWet] = 1.0f;
         q.settings[0].v[fx::kLp]  = lp_knob;
         q.info.raw_mask = 1u << 0;
         q.Blocks(100);
         const float with_ret = Rms(q.out, 2400, 4800) / Rms(q.in, 2400, 4800);
-        const float expect   = 0.5f * fx::ReverbBus::kMakeup; // return only (dry is lowpassed away)
-        CHECK(std::fabs(with_ret - expect) < 0.2f, "the reverb return is NOT lowpassed (x%.2f, expected %.2f)", with_ret, expect);
-        BusRig d(true); // same with the input diffusion on: the return level is the same
-        d.in = r.in;
-        d.settings[0].v[fx::kWet] = 1.0f;
-        d.settings[0].v[fx::kLp]  = lp_knob;
-        d.info.raw_mask = 1u << 0;
-        d.Blocks(100);
-        const float with_diff = Rms(d.out, 2400, 4800) / Rms(d.in, 2400, 4800);
-        CHECK(std::fabs(with_diff - expect) < 0.25f, "input diffusion keeps the return level (x%.2f, expected %.2f)", with_diff, expect);
+        CHECK(with_ret < 1.3f, "the lopass cuts the 5 kHz going into the reverb: only the dry remains (x%.2f)", with_ret);
+        BusRig lo; // the same lopass lets 100 Hz into the reverb: dry + return
+        lo.in = Sine(100, 48000 * 6);
+        for(size_t i = 19200; i < lo.in.size(); i++)
+            lo.in[i] = 0.0f;
+        lo.settings[0].v[fx::kWet] = 1.0f;
+        lo.settings[0].v[fx::kLp]  = lp_knob;
+        lo.info.raw_mask = 1u << 0;
+        lo.Blocks(100);
+        const float low_ret = Rms(lo.out, 2400, 4800) / Rms(lo.in, 2400, 4800);
+        const float expect  = 1.0f + 0.5f * fx::ReverbBus::kMakeup;
+        CHECK(std::fabs(low_ret - expect) < 0.2f, "100 Hz passes the lopass into the reverb (x%.2f, expected %.2f)", low_ret, expect);
     }
     {
         BusRig r; // hold B1 with wet = 100%: it is a SEND: dry stays at full level, the reverb is added on top
