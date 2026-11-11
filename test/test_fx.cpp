@@ -584,7 +584,8 @@ static void TestReverbLayer()
         r.info.raw_mask = 1u << 0;
         r.Blocks(100); // 100 ms: the first 100 ms contain only the stand-in's direct 0.5*in part
         const float with_wet = Rms(r.out, 2400, 4800) / Rms(r.in, 2400, 4800);
-        CHECK(std::fabs(with_wet - 0.5f) < 0.06f, "wet 100%%: the dry signal is replaced by the reverb (x%.2f)", with_wet);
+        const float expect   = 0.5f * fx::ReverbBus::kMakeup; // the stand-in passes 0.5 * input at once
+        CHECK(std::fabs(with_wet - expect) < 0.08f, "wet 100%%: the dry signal is replaced by the reverb (x%.2f, expected %.2f)", with_wet, expect);
     }
     {
         BusRig r; // hold, then release: dry returns, the tail keeps ringing, then the bus turns itself off
@@ -600,7 +601,7 @@ static void TestReverbLayer()
         float peak = 0;
         for(float x : r.out)
             peak = std::max(peak, std::fabs(x));
-        CHECK(peak < 1.5f, "stays bounded (peak %.2f)", peak);
+        CHECK(peak < 4.0f, "stays bounded (peak %.2f)", peak);
     }
     {
         BusRig r; // an fx with a send: B2 (halves) with send 1.0 feeds the reverb; send 0 does not

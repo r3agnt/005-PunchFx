@@ -28,6 +28,8 @@ class ReverbBus
     static float Feedback(float v) { return 0.5f + 0.48f * v; }          // knob -> 0.50 .. 0.98
     static float ToneHz(float v) { return 800.0f * std::pow(22.5f, v); } // knob -> 800 Hz .. 18 kHz
     static float PreDelayMs(float v) { return v * 200.0f; }              // knob -> 0 .. 200 ms
+    /** Fixed make-up gain on the reverb output (ReverbSc is quiet): 2.5 = +8 dB. K5 adds up to +8 dB more. */
+    static constexpr float kMakeup = 2.5f;
 
     void Init(float sample_rate, ReverbCore* core)
     {
@@ -95,6 +97,11 @@ class ReverbBus
                 quiet_ = 0;
             if(quiet_ > static_cast<size_t>(0.3f * sr_))
                 running_ = false;
+        }
+        for(size_t i = 0; i < n; i++) // make-up gain (after the tail check above, so auto-off is unchanged)
+        {
+            ret_l[i] *= kMakeup;
+            ret_r[i] *= kMakeup;
         }
     }
 
