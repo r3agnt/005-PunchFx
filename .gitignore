@@ -1,0 +1,13 @@
+# Build directories and compiled binaries
+build/
+bin/
+obj/
+*.elf
+*.bin
+*.hex
+*.map
+
+# VS Code specific settings
+.vscode/
+# JetBrains IDE settings
+.idea/
