@@ -3,6 +3,7 @@
 Newest first, ONE line per version. Details (why, how, test counts) go in the git commit message.
 Full history up to 004-Looper v0.8.1: `docs/archive/CHANGELOG_FULL.md` (not loaded each session).
 
+- **0.12.4** - Output gain (K5) is +-12 dB; on the reverb it now also applies to the dry while the reverb is on (post wet/dry).
 - **0.12.3** - Reverb is a true send: dry untouched, K6 = return level, no level jump on release (the tail just rings out).
 - **0.12.2** - Reverb return +8 dB make-up gain (`ReverbBus::kMakeup` = 2.5).
 - **0.12.1** - FIX: 0.12.0 froze at power-up (ReverbBus in SDRAM had a constructor that ran before the SDRAM was on). ReverbBus now has no constructor + a compile-time check.

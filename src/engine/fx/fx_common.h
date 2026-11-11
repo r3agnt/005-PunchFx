@@ -11,8 +11,8 @@ namespace fx {
 
 constexpr float kPi = 3.14159265358979f;
 
-/** Knob 5 -> output gain in dB, -8 .. +8 (middle = 0 dB). */
-inline float GainDb(float v) { return (v - 0.5f) * 16.0f; }
+/** Knob 5 -> output gain in dB, -12 .. +12 (middle = 0 dB). */
+inline float GainDb(float v) { return (v - 0.5f) * 24.0f; }
 /** Knob 7 -> hipass cutoff in Hz: 20 Hz .. 2 kHz (bottom = off). */
 inline float HpHz(float v) { return 20.0f * std::pow(100.0f, v); }
 inline bool  HpOn(float v) { return v > 0.01f; }

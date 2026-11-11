@@ -87,10 +87,10 @@ static void TestStage()
 
     s.v[fx::kGain] = 1.0f;
     o = RunStage(s, in, in);
-    CHECK(std::fabs(20 * std::log10(Rms(o, 4800, 48000) / Rms(in, 4800, 48000)) - 8.0f) < 0.05f, "gain knob full = +8 dB");
+    CHECK(std::fabs(20 * std::log10(Rms(o, 4800, 48000) / Rms(in, 4800, 48000)) - 12.0f) < 0.05f, "gain knob full = +12 dB");
     s.v[fx::kGain] = 0.0f;
     o = RunStage(s, in, in);
-    CHECK(std::fabs(20 * std::log10(Rms(o, 4800, 48000) / Rms(in, 4800, 48000)) + 8.0f) < 0.05f, "gain knob zero = -8 dB");
+    CHECK(std::fabs(20 * std::log10(Rms(o, 4800, 48000) / Rms(in, 4800, 48000)) + 12.0f) < 0.05f, "gain knob zero = -12 dB");
 
     s = fx::DefaultSettings();
     s.v[fx::kWet] = 0.0f;
@@ -577,6 +577,15 @@ static void TestReverbLayer()
         for(size_t i = 4800; i < r.out.size(); i++)
             err = std::max(err, std::fabs(r.out[i] - r.in[i]));
         CHECK(err < 1e-4f, "reverb slot with wet 0%%: dry only (error %g)", err);
+    }
+    {
+        BusRig r; // output gain K5 also applies to the dry while the reverb is on
+        r.settings[0].v[fx::kWet]  = 0.0f;
+        r.settings[0].v[fx::kGain] = 1.0f; // +12 dB
+        r.info.raw_mask = 1u << 0;
+        r.Blocks(150);
+        const float on_ratio = Rms(r.out, 2400, 6000) / Rms(r.in, 2400, 6000);
+        CHECK(std::fabs(20 * std::log10(on_ratio) - 12.0f) < 0.3f, "reverb slot on: output gain +12 dB also lifts the dry (%.1f dB)", 20 * std::log10(on_ratio));
     }
     {
         BusRig r; // hold B1 with wet = 100%: it is a SEND: dry stays at full level, the reverb is added on top

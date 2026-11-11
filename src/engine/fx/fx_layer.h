@@ -295,16 +295,20 @@ class Layer
         }
         if(engines_[slot]->IsBus())
         {
-            // A real SEND: the dry signal is untouched (so letting go changes nothing but the input
-            // to the reverb stopping and the tail just rings out). The slot's wet knob (K6) is the
-            // return level, applied to the reverb output in Process().
+            // A real SEND: the dry signal gets no wet/dry change (so letting go changes nothing but the
+            // input to the reverb stopping and the tail rings out). The slot's wet knob (K6) is the
+            // return level, applied to the reverb output in Process(). The OUTPUT GAIN (K5) applies to
+            // the whole output while the reverb is on (dry here, reverb return in Process()).
+            const float g = std::pow(10.0f, GainDb(settings_[slot].v[kGain]) / 20.0f);
             for(size_t i = 0; i < len; i++)
             {
-                out_l[i]  = in_l[off + i];
-                out_r[i]  = in_r[off + i];
-                feed_l[i] = in_l[off + i];
-                feed_r[i] = in_r[off + i];
+                const float gi = bus_last_gain_ + (g - bus_last_gain_) * static_cast<float>(i + 1) / static_cast<float>(len);
+                out_l[i]       = in_l[off + i] * gi;
+                out_r[i]       = in_r[off + i] * gi;
+                feed_l[i]      = in_l[off + i]; // the reverb is fed the un-gained input
+                feed_r[i]      = in_r[off + i];
             }
+            bus_last_gain_ = g;
             return;
         }
         float fl[kMaxChunk], fr[kMaxChunk];
@@ -362,6 +366,7 @@ class Layer
     ReverbBus* reverb_bus_ = nullptr;
     int        bus_slot_   = -1;
     Stage      bus_stage_;                // gain / hipass / lopass / wet level of the reverb return
+    float      bus_last_gain_ = 1.0f;     // for gliding the dry gain while the reverb slot is on
     float      feed_l_[kMaxChunk], feed_r_[kMaxChunk]; // what is sent into the reverb this block
     float      zero_[kMaxChunk];
 
