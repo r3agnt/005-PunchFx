@@ -222,9 +222,11 @@ class MainPage : public daisy::UiPage
         if(eng && potID < fx::kNumKnobs)
         {
             if(!shift_)
+            {
                 name = potID < 4 ? eng->KnobName(potID) : kSharedNames[potID - 4];
                 if(potID == fx::kWet && eng->IsBus())
                     name = "Return level"; // a send fx: K6 is how much reverb comes back, the dry is untouched
+            }
             else if(potID == 0 && !eng->IsBus())
             {
                 name        = "Send reverb"; // Shift + K1: how much of this fx goes into the reverb
