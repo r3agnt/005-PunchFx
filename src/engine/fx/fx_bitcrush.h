@@ -6,7 +6,7 @@
 //   K2 Noise        0 .. 100%: white noise added before the quantiser. It is scaled to the size
 //                   of one quantiser step, so it gets stronger as the bit depth drops (grit).
 //   K3 Bit depth    12 bits .. 1 bit (most of the travel is the audible low end)
-//   K4 Sample rate  48 kHz .. 1 kHz (the audio is held for 1..48 samples)
+//   K4 Sample rate  48 kHz .. 188 Hz (the audio is held for 1..256 samples, equal octave steps)
 #include <cmath>
 #include <cstdint>
 #include "fx_engine.h"
@@ -92,13 +92,13 @@ class BitCrush : public Engine
         s.v[0] = 1.0f; // pre lopass off
         s.v[1] = 0.0f; // no noise
         s.v[2] = 0.5f; // about 5 bits
-        s.v[3] = 0.3f; // hold 3
+        s.v[3] = 0.3f; // hold 5 (about 9 kHz)
     }
 
     /** Knob 0..1 -> bits: 12 at 0, 1 at 1, bending so the audible 8..1 bit range gets most of the travel. */
     static float Bits(float v) { return 1.0f + 11.0f * std::pow(1.0f - v, 1.5f); }
-    /** Knob 0..1 -> samples to hold: 1 .. 48. */
-    static int Hold(float v) { return 1 + static_cast<int>(v * v * 47.0f + 0.5f); }
+    /** Knob 0..1 -> samples to hold: 1 .. 256, in equal octave steps (2^(8 v)): 48 kHz down to 188 Hz. */
+    static int Hold(float v) { return static_cast<int>(std::pow(2.0f, v * 8.0f) + 0.5f); }
 
   private:
     /** White noise -1..1 (a small fixed-seed generator: no library, no memory). */

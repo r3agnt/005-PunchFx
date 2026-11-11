@@ -178,14 +178,15 @@ static void TestBitCrush()
     // sample hold
     knobs[1] = 0.0f;
     knobs[2] = 0.0f;
-    knobs[3] = 1.0f; // hold 48
+    knobs[3] = 1.0f; // hold 256
     bc.Reset();
     bc.Process(in.data(), in.data(), o.data(), r.data(), N, knobs);
     bool held = true;
     for(size_t i = 0; i < N; i++)
-        if(o[i] != o[(i / 48) * 48])
+        if(o[i] != o[(i / 256) * 256])
             held = false;
-    CHECK(held, "sample rate knob full = each value held for 48 samples");
+    CHECK(held, "sample rate knob full = each value held for 256 samples");
+    CHECK(fx::BitCrush::Hold(0.0f) == 1 && fx::BitCrush::Hold(0.5f) == 16 && fx::BitCrush::Hold(1.0f) == 256, "sample rate steps by octaves (1, 16, 256)");
 
     // pre lopass: knob 0.4 = 1264 Hz cuts 5 kHz, passes 100 Hz
     knobs[0] = 0.4f;
