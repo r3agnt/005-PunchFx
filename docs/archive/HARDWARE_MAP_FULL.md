@@ -7,3 +7,9 @@
 - CPU: `CPU avg 12% max 31% (30 s)` every 30 s (max = worst audio block in that period; 100% = dropout).
 - Boot: `Firmware version ...`, `Looper: max 8 bars, min 130 BPM, 4/4`, `Buffers (stereo float): loop 5.4 MB, history 1.4 MB of 64` (the stutter slots add about 1.7 MB; see `docs/DESIGN_LOOPER.md`, "Minimum tempo and memory").
 
+
+
+## Cut from HARDWARE_MAP on the 0.12.0 cleanup
+Planned map: B1 reverb, B2 delay, B3 reverse, B4 pitch down, B5 pitch up, B6 freq shifter, B7 bit crusher, B9 res hipass sweep, B10 res lowpass, B11 distortion, B12 flanger, B13 jet flanger, B14 phaser, B15 comb, B16 tremolo chop.
+- **Brightness:** `SetLed` takes 0.0-1.0 (256 steps, about 218 distinct levels, roughly 1% apart at the dim end). The devkit inverts the value before libDaisy's gamma table, so low values are brighter than they look: 0.01 = 4% on-time, 0.02 = 6%, 0.04 = 12%, 0.08 = 21%, 0.10 = 26%, 0.25 = 55%, 0.5 = 86%, 1.0 = 100%. The levels used are constants at the top of `MainPage` in `main_page.h`.
+- Log: `FX B7 Bit crusher ON`, `FX OFF`, `FX latch Bit crusher`, `FX latch OFF`, `FX edit: Bit crusher`, `K3 Bit depth - 5.2 bits`, `K5 Out gain - +2.0 dB`, `K6 Wet/dry - 100%`, `K7 Hipass - off`, `K8 Lopass - 5000 Hz`.
