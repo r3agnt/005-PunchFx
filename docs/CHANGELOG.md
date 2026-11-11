@@ -3,6 +3,7 @@
 Newest first, ONE line per version. Details (why, how, test counts) go in the git commit message.
 Full history up to 004-Looper v0.8.1: `docs/archive/CHANGELOG_FULL.md` (not loaded each session).
 
+- **0.11.0** - Settings saved to flash: fx settings + loop length/input gain/output level/offset, on edit -> perf; loaded at power-up; Shift at power-up resets. `saved_state.h`, `test_saved_state.cpp`.
 - **0.10.3** - Bit crusher is mono, followed by a mild fixed stereo flanger (`fx_flanger_core.h`, reusable).
 - **0.10.2** - Bit crusher sample rate goes down to 188 Hz (octave steps).
 - **0.10.1** - Shared filters now act on the whole wet/dry mix and start without a thump; bit crusher = pre lopass, noise, bit depth (curved 12..1), sample rate.

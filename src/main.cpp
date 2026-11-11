@@ -35,6 +35,8 @@
 #include "engine/pitch_fx.h"
 #include "engine/fx/fx_layer.h"
 #include "engine/fx/fx_bitcrush.h"
+#include "engine/saved_state.h"
+#include "util/PersistentStorage.h"
 
 using namespace daisy;
 using namespace daisy::desktop_devkit;
@@ -92,6 +94,41 @@ volatile bool         fx_edit_mode           = false;
 fx::Layer        fx_layer;
 fx::SlotSettings fx_settings[fx::kNumSlots];
 static fx::BitCrush fx_bitcrush; // slot 6 = button 7
+
+/** SAVING (0.11.0): the fx settings and the four layer 1 settings are kept in the Seed's flash
+ *  memory (QSPI) with libDaisy's PersistentStorage. It is written when the 2-way switch goes
+ *  from EDIT to PERF (audio code sets the flag, the main loop does the slow write) and read
+ *  at power-up. Hold SHIFT (B8) while powering up to wipe it back to defaults.
+ *  Offset 1 MB: clear of the program (it lives from 0x40000) and of the first 256 KB that
+ *  Electrosmith keeps free. */
+static constexpr uint32_t kStorageOffset = 0x100000;
+static PersistentStorage<SavedState> storage(hw.seed.qspi);
+volatile bool fx_save_request = false;
+
+/** Copy the live settings into a SavedState (what gets written). */
+static SavedState CaptureState()
+{
+    SavedState s;
+    s.magic        = SavedState::kMagic;
+    s.input_offset = params.input_offset;
+    s.loop_length  = params.loop_length;
+    s.input_gain   = params.input_gain;
+    s.out_level    = params.out_level;
+    for(int i = 0; i < fx::kNumSlots; i++)
+        s.fx[i] = fx_settings[i];
+    return s;
+}
+
+/** Put saved values back into the live settings. */
+static void ApplyState(const SavedState &s)
+{
+    params.input_offset = s.input_offset;
+    params.loop_length  = s.loop_length;
+    params.input_gain   = s.input_gain;
+    params.out_level    = s.out_level;
+    for(int i = 0; i < fx::kNumSlots; i++)
+        fx_settings[i] = s.fx[i];
+}
 
 /** Button commands (B1, B2) waiting for the audio callback. */
 SpscQueue<LoopCmd, 16> loop_cmd_queue;
@@ -345,6 +382,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         }
         if(edit != fx_edit_mode)
         {
+            if(fx_edit_mode && !edit)
+                fx_save_request = true; // leaving EDIT: save (the main loop does it)
             fx_edit_mode = edit;
             Say(FixedCapStr<32>(edit ? "Edit mode" : "Perf mode"));
         }
@@ -551,6 +590,30 @@ int main(void)
     // Print the looper limits and how much memory its buffers will need.
     LogLooperConfig(hw.seed.AudioSampleRate());
 
+    // Saved settings: read them from flash (or reset them if SHIFT is held at power-up).
+    {
+        // The buttons need a few readings before they are reliable (debounce).
+        for(int i = 0; i < 12; i++)
+        {
+            hw.UpdateAllControls();
+            System::Delay(2);
+        }
+        const SavedState defaults = CaptureState();
+        storage.Init(defaults, kStorageOffset); // empty flash: writes the defaults now
+        if(hw.button[7].Pressed())
+        {
+            storage.RestoreDefaults();
+            Logger<LOGGER_EXTERNAL>::PrintLine("FX settings RESET to defaults (Shift held at power-up)");
+        }
+        else if(storage.GetSettings().IsValid())
+        {
+            ApplyState(storage.GetSettings());
+            Logger<LOGGER_EXTERNAL>::PrintLine("FX settings loaded from flash");
+        }
+        else
+            Logger<LOGGER_EXTERNAL>::PrintLine("FX settings: defaults (nothing valid saved)");
+    }
+
     // Start listening for MIDI on the DIN input (without this no MIDI arrives).
     // Clock/transport messages go to MidiRealtimeCallback straight away; CCs
     // and other messages go through the normal queue handled below.
@@ -577,6 +640,22 @@ int main(void)
                 auto cc = msg.AsControlChange();
                 if(ApplyCC(cc.control_number, cc.value))
                     LogCc(cc.control_number, cc.value);
+            }
+        }
+
+        // Save the settings if the switch just went from EDIT to PERF. Flash erase + write takes
+        // a moment; it is done here (not in the audio code) and the audio keeps running.
+        if(fx_save_request)
+        {
+            fx_save_request       = false;
+            const SavedState now  = CaptureState();
+            if(now == storage.GetSettings())
+                Logger<LOGGER_EXTERNAL>::PrintLine("FX settings unchanged");
+            else
+            {
+                storage.GetSettings() = now;
+                storage.Save();
+                Logger<LOGGER_EXTERNAL>::PrintLine("FX settings saved");
             }
         }
 
