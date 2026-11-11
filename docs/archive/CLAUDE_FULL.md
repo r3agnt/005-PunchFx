@@ -118,3 +118,7 @@ Looper-specific (details in `docs/DESIGN_LOOPER.md`):
 - 0.5.0 polish; apply the input offset to loop recording starts too (see `docs/DESIGN_LOOPER.md`).
 - Sub-block (hardware timer) timestamps for MIDI clock, to remove the up-to-1 ms loop-start jitter.
 - Later: 16-bar loops, USB MIDI clock, Continue / Song Position Pointer, overdub, save/restore.
+
+
+## Planned-fx paragraph (moved out of CLAUDE.md, 2026-11-11)
+- **Planned fx** (layer 2: one fx per button on B1-B7 and B9-B16 = 15 slots, B8 = Shift; no banks; the looper buttons live on layer 1 only): reverb (+shimmer), delay, resonant hipass sweep (K1 freq, K2 res, K3 LFO depth, K4 ramp LFO speed 2 bars..1/32, LFO locked to the bar or to the trigger), bit crusher, jet flanger, flanger, phaser, comb, resonant lowpass, distortion with prefilter, freq shifter, pitch up/down (up must be tight), **tremolo chop / tight gate** (B16), **reverse** (plays recent audio backwards from the quantised position, no pitch). Later: stacked inserts and snapshots.
