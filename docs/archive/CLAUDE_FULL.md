@@ -122,3 +122,7 @@ Looper-specific (details in `docs/DESIGN_LOOPER.md`):
 
 ## Planned-fx paragraph (moved out of CLAUDE.md, 2026-11-11)
 - **Planned fx** (layer 2: one fx per button on B1-B7 and B9-B16 = 15 slots, B8 = Shift; no banks; the looper buttons live on layer 1 only): reverb (+shimmer), delay, resonant hipass sweep (K1 freq, K2 res, K3 LFO depth, K4 ramp LFO speed 2 bars..1/32, LFO locked to the bar or to the trigger), bit crusher, jet flanger, flanger, phaser, comb, resonant lowpass, distortion with prefilter, freq shifter, pitch up/down (up must be tight), **tremolo chop / tight gate** (B16), **reverse** (plays recent audio backwards from the quantised position, no pitch). Later: stacked inserts and snapshots.
+
+
+## Design decision bullet (cut 2026-11-11)
+- **Beat repeat stutters the input history only; the loop records the beat-repeat output.** Crossfades end on the quantise line. MIDI clock arrives via `StartReceiveRt` into a queue, stamped per audio block (~1 ms). No delay on the live input; an input offset on beat-repeat slice reads handles audio-vs-clock misalignment.

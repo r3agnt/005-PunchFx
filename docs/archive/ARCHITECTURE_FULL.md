@@ -1,0 +1,6 @@
+
+
+## Long path descriptions (cut 2026-11-11)
+- **MIDI clock path:** the DIN receive code calls `MidiRealtimeCallback` (main.cpp) for every clock tick / Start / Stop / Continue; it only pushes the message into `midi_rt_queue`. At the start of each audio block `clock_tracker.Advance()` takes them, updates bar/beat/eighth and the tempo estimate, and queues log lines. The LEDs (`MainPage::DrawLeds`) read a copy of the position via `clock_tracker.GetStatus()`.
+- **Looper path:** B1/B2 presses (UI context) push a `LoopCmd` into `loop_cmd_queue`; the audio callback pops them, then runs `quantized_loop.Process` on each block (in chunks of at most 128 samples). The loop buffers are two float arrays in SDRAM. Log lines come out through `msg_fifo`; the LEDs read `quantized_loop.GetStatus()`.
+- **Beat repeat path:** each audio block reads buttons 9-16 straight from the hardware (`hw.button[8..15].Pressed()`; ones pressed while Shift is held are ignored), the clock position at the start of the block (`clock_tracker.BarAtBlockStart`, `PositionAtBlockStart`) and the input offset, and passes them to `beat_repeat.Process`. Its output feeds the looper. Log lines come out through `msg_fifo`; the LEDs read `beat_repeat.GetStatus()`.

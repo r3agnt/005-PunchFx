@@ -1,4 +1,5 @@
 # 005-PunchFx — context for Claude
+Names: **Quantized loop buffer** = B1/B2 looper (`quantized_loop`); **Beat repeat** = stutter on B9-B16 (layer 1).
 
 Daisy Seed (STM32H750, Seed 3) on the Electrosmith **Desktop DevKit**. Goal: looper + punch-in fx.
 Forked from `../004-Looper` v0.8.1 (kept as the working reference; its slice mode was removed here). This is a prototype for smaller ideas that will feed a larger project. The user has **no C++ background** — keep
@@ -79,7 +80,7 @@ If something is not found there, say so instead of inventing it.
 | `test/` | Mac-side tests: `make -C test` |
 
 ## Build / flash
-- Build: `make` (clean: `make clean && make`). Output `build/004-Looper.bin`. Zero warnings.
+- Build: `make` (clean: `make clean && make`). Output `build/005-PunchFx.bin`. Zero warnings.
 - Flash: press RESET then BOOT on the Seed, then `make program-dfu` (external-USB bootloader; see README).
 - Serial: connect a serial monitor to the devkit's USB-C port.
 
@@ -99,14 +100,11 @@ If something is not found there, say so instead of inventing it.
 - **Soft takeover on every knob layer**, except K2 normal (loop length, `normal_takeover = false`).
 - **Knob/CC assignments are tables in `params.h`.** Knob and CC write the same value; last one wins. Fx settings + the 4 layer 1 settings (K2 length, input gain, output level, offset) are SAVED to the Seed flash (`SavedState`, `src/engine/saved_state.h`) when the 2-way switch goes edit -> perf, and loaded at power-up; hold Shift (B8) at power-up to reset them. Stored at QSPI offset 0x100000 (program lives from 0x40000; never write below 0x40000+program size or in the first 256 KB).
 - **Engine is plain C++, tested on the Mac first.** Buffers are fixed stereo float arrays in SDRAM sized from `looper_config.h` (min 130 BPM, no runtime control).
-- **Beat repeat stutters the input history only; the loop records the beat-repeat output.** Crossfades end on the quantise line. MIDI clock arrives via `StartReceiveRt` into a queue, stamped per audio block (~1 ms). No delay on the live input; an input offset on beat-repeat slice reads handles audio-vs-clock misalignment.
-
-## Names (use these)
-**Quantized loop buffer** = global B1/B2 looper (`quantized_loop`). **Beat repeat** = stutter on B9-B16 (layer 1).
+- **Beat repeat stutters the input history only; the loop records the beat-repeat output.** Crossfades end on the quantise line; MIDI clock goes through a queue, stamped per audio block (~1 ms); an input offset on slice reads handles audio-vs-clock misalignment.
 
 ## Known limits
 - Round-trip latency not measured. Loop-start timing has up to ~1 ms block jitter. The Makefile depends on libDaisy/DaisySP at `../../DaisyExamples/`; `USE_FATFS = 1` is left on though SD is unused.
 
 ## Roadmap (ideas, not committed to)
 - Apply the input offset to loop recording starts; hardware-timer timestamps for MIDI clock.
-- Later: 16-bar loops, USB MIDI clock, Continue / Song Position Pointer, overdub, save/restore.
+- Later: 16-bar loops, USB MIDI clock, Continue / Song Position Pointer, overdub, SD-card snapshots.

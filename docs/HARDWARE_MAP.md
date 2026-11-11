@@ -56,18 +56,11 @@ Button map: see `CLAUDE.md`.
 - Log: `FX B7 Bit crusher ON`, `FX OFF`, `FX latch ...`, `FX edit: ...`, `K3 Bit depth - 5.2 bits`, `K5 Out gain - +2.0 dB`.
 - LEDs (layer 2): a fx button LED is dim if that fx exists, brighter = edit slot (edit mode), brighter again = latched, full = ON, flashing = waiting for its line. LED 8 = edit (glow) / perf (dim). Layer 3: LED 8 flashes slowly.
 
-## LEDs (0.4.3)
-- **Beat repeat buttons 9-16** (their LED flashes from the press until the 1/16 line; LED 16 is shared with the loop-audible glow; the stutter LED wins): their LED flashes fast while waiting for the slice boundary and glows dimly (0.02, same as the loop-length LEDs) while repeating held, brighter (0.15) while latched on; the eighth-note LED stays brighter on top.
-- **Brightness:** `SetLed` 0.0-1.0; the devkit inverts it, so low values are brighter than they look (0.02 = 6% on-time, 0.25 = 55%, 1.0 = 100%). Levels are constants at the top of `MainPage` in `main_page.h`.
-- **Setting the loop length:** for 1.5 s after K2 (or CC 21) changes it, LEDs 1-8 show the new length (LEDs 1..N lit for N bars) instead of the normal top-row display. It applies to the next recording.
-- **Top row, LEDs 1-8:** one LED per bar of the loop cycle (dim); the bar we are in is bright while the transport runs.
-  - ARMED: LED 1 flashes slowly.
-  - RECORDING: bars fill up like a progress bar; the current bar flickers.
-  - PLAYING: one bright LED moves along the bars.
-- **Bottom row, LEDs 9-16:** the eight eighth-notes of the bar; the current one is bright. LED 16 also glows steadily while the loop is what you hear (dark = live input).
-- **No MIDI clock:** LEDs 9 and 16 blink slowly. **Clock present but stopped:** the bottom row glows very dimly.
-- **Pitch fx (0.6.0):** LED 6 flashes fast from the B6 press until its 1/16 line, then stays on while the effect is on (replaces the bar-6 LED).
-- **Seed LED:** slow flash = armed, solid = recording, otherwise a fast heartbeat blink.
-- Button presses no longer light their LED.
+## LEDs, layer 1 (layer 2: see its section above)
+- **Top row 1-8:** one dim LED per bar of the loop cycle, the current bar bright. ARMED: LED 1 flashes. RECORDING: bars fill up. PLAYING: one bright LED moves along. For 1.5 s after K2 (or CC 21) changes the length, LEDs 1..N show the new length.
+- **Bottom row 9-16:** the eight eighth-notes (current one bright); LED 16 also glows while the loop is what you hear. Beat repeat: the button LED flashes while waiting for its 1/16 line, glows dim while held, brighter (0.15) while latched. LED 6 = pitch fx (flashes until its line, then on).
+- **No MIDI clock:** LEDs 9 and 16 blink slowly. **Clock but stopped:** bottom row glows very dimly.
+- **Seed LED:** slow flash = armed, solid = recording, else a fast heartbeat.
+- **Brightness:** `SetLed` 0.0-1.0; the devkit inverts it (0.02 = 6% on-time, 0.25 = 55%, 1.0 = 100%). Levels are constants at the top of `MainPage`.
 
-Defaults at power-up: loop length 4 bars, input gain 0 dB, output at ceiling, no loop.
+Defaults at power-up: loop length 4 bars, input gain 0 dB, output at ceiling, no loop (unless saved).
