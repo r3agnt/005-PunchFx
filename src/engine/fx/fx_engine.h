@@ -20,8 +20,12 @@ constexpr int kGain = 4, kWet = 5, kHp = 6, kLp = 7;
  *  delay slot kSendReverb = how much delay goes into the reverb.
  *  Value 10 (kRouting) is used by the DELAY slot only (Shift + K4): below 0.5 = reverb feeds the delay,
  *  0.5 or more = delay feeds the reverb (never both, so they can't feed each other in a loop). */
-constexpr int kNumValues = 11;
+constexpr int kNumValues = 13;
 constexpr int kSendReverb = 8, kSendDelay = 9, kRouting = 10;
+/** Values 11 and 12: this slot's OWN delay time and feedback, used while this slot feeds the delay bus
+ *  (Shift + K3 / Shift + K4 in edit mode, on every slot except the delay slot itself, which uses its K1/K2).
+ *  The bottom of each knob (0) = "follow the delay slot's K1 / K2". */
+constexpr int kDelayTime = 11, kDelayFb = 12;
 
 struct SlotSettings
 {
@@ -41,6 +45,8 @@ inline SlotSettings DefaultSettings()
     s.v[kSendReverb] = 0.0f;
     s.v[kSendDelay]  = 0.0f;
     s.v[kRouting]    = 0.0f;
+    s.v[kDelayTime]  = 0.0f; // follow the delay slot
+    s.v[kDelayFb]    = 0.0f;
     return s;
 }
 

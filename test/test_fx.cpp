@@ -819,10 +819,10 @@ static void TestDelayBus()
         CHECK(PeakAt(ol, 100, 30000) == 24000, "1/8 at 60 BPM: echo at 24000");
     }
     {
-        // all six steps (a beat = 24000 samples at 120 BPM)
-        const size_t expect[6] = {24000, 18000, 12000, 9000, 6000, 3000};
+        // all eight steps (a beat = 24000 samples at 120 BPM)
+        const size_t expect[8] = {24000, 18000, 12000, 9000, 6000, 3000, 1500, 750};
         bool         ok        = true;
-        for(int i = 0; i < 6; i++)
+        for(int i = 0; i < 8; i++)
         {
             DelayRig d;
             d.s.v[0] = StepKnob(i);
@@ -831,7 +831,7 @@ static void TestDelayBus()
             if(PeakAt(ol, 100, 30000) != expect[i])
                 ok = false;
         }
-        CHECK(ok, "all six note lengths (1/4, dotted 1/8, 1/8, dotted 1/16, 1/16, 1/32) land at the right sample");
+        CHECK(ok, "all eight note lengths (1/4, dotted 1/8, 1/8, dotted 1/16, 1/16, 1/32, 1/64, 1/128) land at the right sample");
     }
     {
         DelayRig d; // no clock (spb 0): keeps the 120 BPM it starts with
@@ -1104,8 +1104,83 @@ static void TestDelayLayer()
     }
 }
 
+/** Per-slot delay time and feedback (Shift + K3 / K4): an fx that feeds the delay can use its own. */
+static void TestDelayPerSlot()
+{
+    std::printf("per-slot delay time and feedback\n");
+    CHECK(fx::DelayBus::SlotStepIndex(0.0f) == -1 && fx::DelayBus::SlotStepIndex(0.10f) == -1, "time knob at the bottom = follow");
+    CHECK(fx::DelayBus::SlotStepIndex(0.12f) == 0 && fx::DelayBus::SlotStepIndex(1.0f) == 7, "time knob above the bottom = steps 1/4 ... 1/128");
+    CHECK(fx::DelayBus::SlotFeedbackKnob(0.0f) < 0.0f && fx::DelayBus::SlotFeedbackKnob(1.0f) == 1.0f, "feedback knob: bottom = follow, top = full");
+
+    // B3 (half) with a delay send of 1; an impulse at sample 480; the delay slot is 1/8 with no feedback, return 100%.
+    auto make = [](DelayLayerRig& r) {
+        std::fill(r.in.begin(), r.in.end(), 0.0f);
+        r.in[480] = 1.0f;
+        r.settings[1].v[0]       = StepKnob(2); // delay slot: 1/8 = 12000 samples
+        r.settings[1].v[1]       = 0.0f;        // no feedback
+        r.settings[1].v[fx::kWet] = 1.0f;
+        r.settings[2].v[fx::kSendDelay] = 1.0f;
+        r.info.raw_mask = 1u << 2;
+    };
+    {
+        DelayLayerRig r; // follow: the delay slot's own settings
+        make(r);
+        r.Blocks(600);
+        const size_t p = PeakAt(r.out, 1000, 30000);
+        CHECK(p == 480 + 12000, "follow B2: echo at the delay slot's time (%zu)", p);
+    }
+    {
+        DelayLayerRig r; // own time 1/16 = 6000 samples
+        make(r);
+        r.settings[2].v[fx::kDelayTime] = (5 + 0.5f) / 9.0f; // the 1/16 step is slot 5 of 9 (slot 0 = follow)
+        r.Blocks(600);
+        const size_t p = PeakAt(r.out, 1000, 30000);
+        CHECK(p == 480 + 6000, "own time 1/16: echo at %zu (expected 6480)", p);
+        CHECK(std::fabs(r.out[p + 6000]) < 1e-5f, "... and no second echo (the delay slot's feedback is 0)");
+    }
+    {
+        DelayLayerRig r; // own feedback: a second echo appears
+        make(r);
+        r.settings[2].v[fx::kDelayFb] = 0.6f;
+        r.Blocks(600);
+        const size_t p1 = PeakAt(r.out, 1000, 14000);
+        const size_t p2 = PeakAt(r.out, p1 + 11000, p1 + 13000);
+        CHECK(std::fabs(r.out[p2]) > 0.02f, "own feedback: a second echo comes (%.3f)", r.out[p2]);
+    }
+    {
+        // after letting go, the tail keeps the last slot's time (1/16) and feedback, not the delay slot's
+        DelayLayerRig r;
+        make(r);
+        r.settings[2].v[fx::kDelayTime] = (5 + 0.5f) / 9.0f;
+        r.settings[2].v[fx::kDelayFb]   = 0.7f;
+        r.Blocks(63);            // 3 ms: the impulse is in, B3 held
+        r.info.raw_mask = 0;     // let go
+        r.Blocks(500);           // to 0.25 s
+        const size_t p1 = PeakAt(r.out, 1000, 8000);
+        CHECK(p1 == 480 + 6000, "tail: first echo at the slot's 1/16 (%zu)", p1);
+        const size_t p3 = PeakAt(r.out, 480 + 3 * 6000 - 300, 480 + 3 * 6000 + 300);
+        CHECK(std::fabs(r.out[p3]) > 0.01f, "tail: the third echo is still there (the slot's feedback, %.3f)", r.out[p3]);
+    }
+    {
+        // pressing the delay slot itself uses ITS settings again
+        DelayLayerRig r;
+        make(r);
+        r.settings[2].v[fx::kDelayTime] = (5 + 0.5f) / 9.0f;
+        r.Blocks(63);
+        r.info.raw_mask = 0;
+        r.Blocks(2000); // B3's echo (1/16) comes and the bus dies down
+        const size_t start = r.t;
+        r.in[start + 480] = 1.0f; // a second impulse, now with B2 held
+        r.info.raw_mask   = 1u << 1;
+        r.Blocks(600);
+        const size_t p = PeakAt(r.out, start + 1000, start + 30000);
+        CHECK(p == start + 480 + 12000, "B2 pressed: back to the delay slot's own time (echo at +%zu, expected +12480)", p - start);
+    }
+}
+
 int main()
 {
+    TestDelayPerSlot();
     TestDelayBus();
     TestDelayLayer();
     TestStage();

@@ -169,6 +169,8 @@ class Layer
         //   routing < 0.5 (default): the reverb runs first and its return is added to the delay's input.
         //   routing >= 0.5:          the delay runs first and its return is added to the reverb's input.
         const bool xf       = xf_pos_ < xf_len_;
+        if(TakesDelaySettings(cur_))
+            delay_owner_ = cur_; // stays until another slot that feeds the delay is pressed
         const bool rev_on   = reverb_bus_ && bus_slot_ >= 0 && engines_[bus_slot_];
         const bool del_on   = delay_bus_ && delay_slot_ >= 0 && engines_[delay_slot_];
         bool       rev_feed = FeedsReverb(cur_) || (xf && FeedsReverb(prev_));
@@ -242,12 +244,38 @@ class Layer
         bus_stage_.Process(zero_, zero_, tl, tr, ret_l, ret_r, n, rs);
     }
 
+    /** Does a press of this slot take over the delay's time / feedback? The delay slot itself (its own K1 / K2),
+     *  the reverb slot when it feeds the delay (routing reverb > delay, send above 0), any other fx with a delay send. */
+    bool TakesDelaySettings(int slot) const
+    {
+        if(slot < 0 || !engines_[slot] || !delay_bus_)
+            return false;
+        if(slot == delay_slot_)
+            return true;
+        if(slot == bus_slot_)
+            return settings_[delay_slot_].v[kRouting] < 0.5f && settings_[slot].v[kSendDelay] > 0.001f;
+        return settings_[slot].v[kSendDelay] > 0.001f;
+    }
+
     /** Run the delay bus on feed2_l_/feed2_r_; ret = its return after the slot's return level and gain.
+     *  Time and feedback come from the slot that last took over the delay (`delay_owner_`): its own values from
+     *  Shift + K3 / K4, or the delay slot's K1 / K2 where those are at the bottom ("follow").
      *  (K7 / K8 of the delay slot place the bandpass inside the feedback loop, so the stage's hipass / lopass are off.) */
     void RunDelay(float samples_per_bar, size_t n, bool feeding, float* ret_l, float* ret_r)
     {
-        float tl[kMaxChunk], tr[kMaxChunk];
-        delay_bus_->Process(feed2_l_, feed2_r_, tl, tr, n, settings_[delay_slot_], feeding, samples_per_bar);
+        float        tl[kMaxChunk], tr[kMaxChunk];
+        SlotSettings use = settings_[delay_slot_];
+        if(delay_owner_ >= 0 && delay_owner_ != delay_slot_)
+        {
+            const SlotSettings& o  = settings_[delay_owner_];
+            const int           st = DelayBus::SlotStepIndex(o.v[kDelayTime]);
+            if(st >= 0)
+                use.v[0] = DelayBus::StepKnob(st);
+            const float fk = DelayBus::SlotFeedbackKnob(o.v[kDelayFb]);
+            if(fk >= 0.0f)
+                use.v[1] = fk;
+        }
+        delay_bus_->Process(feed2_l_, feed2_r_, tl, tr, n, use, feeding, samples_per_bar);
         SlotSettings ds = settings_[delay_slot_];
         ds.v[kHp]       = 0.0f;
         ds.v[kLp]       = 1.0f;
@@ -513,6 +541,7 @@ class Layer
     // delay bus (same idea)
     DelayBus*  delay_bus_  = nullptr;
     int        delay_slot_ = -1;
+    int        delay_owner_ = -1;         // slot whose delay time / feedback the bus uses (-1 = the delay slot's)
     Stage      delay_stage_;              // return level / gain of the delay return
     float      feed2_l_[kMaxChunk], feed2_r_[kMaxChunk]; // what is sent into the delay this block
     float      zero_[kMaxChunk];

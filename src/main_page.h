@@ -238,6 +238,11 @@ class MainPage : public daisy::UiPage
                     name        = "Send delay";
                     value_index = fx::kSendDelay;
                 }
+                else if(potID == 2 || potID == 3) // Shift + K3 / K4: the delay time / feedback while the reverb feeds the delay
+                {
+                    name        = potID == 2 ? "Delay time" : "Delay feedback";
+                    value_index = potID == 2 ? fx::kDelayTime : fx::kDelayFb;
+                }
             }
             else if(slot == fx::kDelaySlot)
             {
@@ -262,6 +267,11 @@ class MainPage : public daisy::UiPage
                 name        = "Send delay"; // Shift + K2: how much of this fx goes into the delay
                 value_index = fx::kSendDelay;
             }
+            else if(potID == 2 || potID == 3)
+            {
+                name        = potID == 2 ? "Delay time" : "Delay feedback"; // this fx's own delay settings (bottom = follow B2)
+                value_index = potID == 2 ? fx::kDelayTime : fx::kDelayFb;
+            }
         }
         if(!eng || name == nullptr)
         {
@@ -274,7 +284,8 @@ class MainPage : public daisy::UiPage
         line.Append(" - ");
         AppendFxValue(line, value_index, eng, pos);
         // The send between the reverb and the delay only works in one of the two routings.
-        if((slot == fx::kReverbSlot && value_index == fx::kSendDelay && delay_to_reverb)
+        if((slot == fx::kReverbSlot && delay_to_reverb
+            && (value_index == fx::kSendDelay || value_index == fx::kDelayTime || value_index == fx::kDelayFb))
            || (slot == fx::kDelaySlot && value_index == fx::kSendReverb && !delay_to_reverb))
             line.Append(" (not active in this routing)");
 
@@ -306,6 +317,22 @@ class MainPage : public daisy::UiPage
         {
             line.AppendFloat(eng->KnobReal(knob, v), 1);
             line.Append(eng->KnobUnit(knob));
+        }
+        else if(knob == fx::kDelayTime)
+        {
+            const int st = fx::DelayBus::SlotStepIndex(v);
+            line.Append(st < 0 ? "follow B2" : fx::DelayBus::StepName(st));
+        }
+        else if(knob == fx::kDelayFb)
+        {
+            const float fk = fx::DelayBus::SlotFeedbackKnob(v);
+            if(fk < 0.0f)
+                line.Append("follow B2");
+            else
+            {
+                line.AppendInt(static_cast<int>(fx::DelayBus::FeedbackAmt(fk) * 100.0f + 0.5f));
+                line.Append("%");
+            }
         }
         else if(knob == fx::kRouting)
             line.Append(v >= 0.5f ? "delay > reverb" : "reverb > delay");

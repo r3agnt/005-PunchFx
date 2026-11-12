@@ -7,7 +7,7 @@
 // read ("feedback") is also written back in again, so the echo repeats and slowly fades.
 //
 // What is special here:
-//  - TIME is locked to the MIDI clock (K1 = a note length: 1/4, dotted 1/8, 1/8, dotted 1/16, 1/16, 1/32).
+//  - TIME is locked to the MIDI clock (K1 = a note length: 1/4, dotted 1/8, 1/8, dotted 1/16, 1/16, 1/32, 1/64, 1/128).
 //    With no clock it keeps the last tempo it saw (120 BPM if it never saw one).
 //  - When the time changes, the old and the new echo position are crossfaded (25 ms): no clicks, no pitch swoop.
 //  - A BANDPASS FILTER sits in the feedback path (K7 = its centre frequency, K8 = its width; no resonance).
@@ -30,10 +30,10 @@ class DelayBus
   public:
     static constexpr size_t kSize = 131072; // frames per side: 2.7 s at 48 kHz (a power of two)
     static constexpr size_t kMask = kSize - 1;
-    static constexpr int    kNumSteps = 6;
+    static constexpr int    kNumSteps = 8;
 
     // ---- knob -> real value (also used by the log and the tests) ----
-    /** K1 -> which of the 6 note lengths (0 = 1/4 ... 5 = 1/32). */
+    /** K1 -> which of the 8 note lengths (0 = 1/4 ... 7 = 1/128). */
     static int StepIndex(float v)
     {
         int i = static_cast<int>(v * static_cast<float>(kNumSteps));
@@ -42,14 +42,33 @@ class DelayBus
     /** Length of that step in beats (a beat = a quarter note). */
     static float BeatsFor(int step)
     {
-        static const float kBeats[kNumSteps] = {1.0f, 0.75f, 0.5f, 0.375f, 0.25f, 0.125f};
+        static const float kBeats[kNumSteps] = {1.0f, 0.75f, 0.5f, 0.375f, 0.25f, 0.125f, 0.0625f, 0.03125f};
         return kBeats[step < 0 ? 0 : (step >= kNumSteps ? kNumSteps - 1 : step)];
     }
     static const char* StepName(int step)
     {
-        static const char* const kNames[kNumSteps] = {"1/4", "1/8 dotted", "1/8", "1/16 dotted", "1/16", "1/32"};
+        static const char* const kNames[kNumSteps] = {"1/4", "1/8 dotted", "1/8", "1/16 dotted", "1/16", "1/32", "1/64", "1/128"};
         return kNames[step < 0 ? 0 : (step >= kNumSteps ? kNumSteps - 1 : step)];
     }
+    /** The knob value that selects step `i` (the middle of its range). */
+    static float StepKnob(int i) { return (static_cast<float>(i) + 0.5f) / static_cast<float>(kNumSteps); }
+    /** Another slot's own delay time knob (Shift + K3): bottom = -1 (follow the delay slot), then the 8 steps. */
+    static int SlotStepIndex(float v)
+    {
+        int i = static_cast<int>(v * static_cast<float>(kNumSteps + 1));
+        if(i <= 0)
+            return -1;
+        return (i > kNumSteps ? kNumSteps : i) - 1;
+    }
+    /** A other slot's own feedback knob (Shift + K4): bottom = -1 (follow), else the equivalent K2 knob value 0..1. */
+    static float SlotFeedbackKnob(float v)
+    {
+        if(v < kFollow)
+            return -1.0f;
+        const float k = (v - kFollow) / (1.0f - kFollow);
+        return k > 1.0f ? 1.0f : k;
+    }
+    static constexpr float kFollow = 0.02f; // below this the per-slot feedback knob means "follow the delay slot"
     /** K2 -> feedback amount 0 .. 0.95 (never reaches 1, so the echoes always die away). */
     static float FeedbackAmt(float v) { return v * 0.95f; }
     /** K7 -> centre frequency of the feedback bandpass: 200 Hz .. 6 kHz. */
@@ -264,7 +283,7 @@ class DelaySlot : public Engine
     }
     void SetDefaults(SlotSettings& s) const override
     {
-        s.v[0]           = 0.4167f; // time: 1/8 (the middle of step 3 of 6)
+        s.v[0]           = DelayBus::StepKnob(2); // time: 1/8
         s.v[1]           = 0.4f;    // feedback: 38%
         s.v[2]           = 0.5f;    // (free)
         s.v[3]           = 0.0f;    // ping-pong off
